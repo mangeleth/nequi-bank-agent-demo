@@ -10,6 +10,7 @@ To change a decision, add a new ADR that supersedes the old one, and mark the ol
 | [0003](0003-langfuse-cloud-no-pii-masking.md) | Langfuse Cloud tracing without PII masking | Accepted (demo only) | M5 |
 | [0004](0004-acr-incremental-delivery.md) | Azure Container Registry and per-milestone delivery to AKS | Accepted | M2 |
 | [0005](0005-key-vault-secrets.md) | Azure Key Vault for secrets, mounted via Secrets Store CSI driver | Accepted | M2 |
+| [0006](0006-pydantic-contracts.md) | Pydantic v2 contracts as the trust boundary for LLM output | Accepted | M2 |
 
 ## Template
 

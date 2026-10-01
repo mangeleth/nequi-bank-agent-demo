@@ -2,12 +2,16 @@
 include .env
 export
 
-.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon
+.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon test
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
-	uv venv --python 3.12 .venv
-	uv pip install --python .venv/bin/python -q -r scripts/requirements.txt
+	uv venv --allow-existing --python 3.12 .venv
+	uv pip install --python .venv/bin/python -q -r requirements-dev.txt
+
+## Run the unit tests
+test:
+	.venv/bin/python -m pytest -q
 
 ## Show the logged-in Azure account and active subscription
 az-check:

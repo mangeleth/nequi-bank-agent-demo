@@ -1,0 +1,3 @@
+-r scripts/requirements.txt
+-r shared/requirements.txt
+pytest>=8
