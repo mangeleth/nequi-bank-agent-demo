@@ -54,7 +54,7 @@ def test_amount_rejects_float_extra_decimals_nonpositive_and_text(bad):
 def test_reconciliation_discrepancy_is_exact():
     rec = LedgerReconciliation(
         transaction_id=TX, settlement_status=SettlementStatus.FAILED,
-        debited_amount=Decimal("0.30"), credited_amount=Decimal("0.10"),
+        debited_amount=Decimal("0.30"), credited_amount=Decimal("0.10"), summary="x",
     )
     assert rec.discrepancy == Decimal("0.20")  # with floats: 0.19999999999999998
 
@@ -129,7 +129,7 @@ def test_auto_approval_cannot_hide_a_failed_check():
 @pytest.mark.parametrize("field", ["debited_amount", "credited_amount"])
 def test_float_rejected_on_every_money_field(field):
     data = {"transaction_id": TX, "settlement_status": SettlementStatus.FAILED,
-            "debited_amount": "10.00", "credited_amount": "0"}
+            "debited_amount": "10.00", "credited_amount": "0", "summary": "x"}
     with pytest.raises(ValidationError, match="never a float"):
         LedgerReconciliation(**(data | {field: 10.0}))
 

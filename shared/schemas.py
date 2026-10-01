@@ -126,6 +126,7 @@ class LedgerReconciliation(Contract):
     debited_amount: Amount
     credited_amount: Amount
     currency: Currency = "COP"
+    summary: str = Field(min_length=1, max_length=1000)  # plain-language explanation for a reviewer
 
     @property
     def discrepancy(self) -> Decimal:

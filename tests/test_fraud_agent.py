@@ -3,19 +3,16 @@ the tools call the real Core Systems app in-process. That lets us script a model
 fooled by prompt injection and prove the boundaries hold anyway.
 """
 
-import json
-
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, ToolMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
-from langchain_core.utils.function_calling import convert_to_openai_tool
+from langchain_core.messages import AIMessage
 
 from services.core_systems.app import _build_adapters
 from services.core_systems.app import app as core_app
 from services.fraud_agent.main import create_app
+from tests.fakes import ScriptedChatModel, ai
+from tests.fakes import tool_call as call
 from tests.jwt_helpers import SETTINGS, bearer
 
 MY_TX = "TX-20261001000001"  # owned by user-1001: 50.000 failed, low risk
@@ -23,46 +20,18 @@ RISKY_TX = "TX-20261001000004"  # owned by user-1002: high risk
 URL = "/v1/fraud/assessments"
 
 
-class ScriptedChatModel(BaseChatModel):
-    """Plays back prepared AI messages and records everything the 'model' was shown."""
-
-    script: list[AIMessage]
-    seen: list[list] = []  # messages received on each call
-    tool_schemas: list[dict] = []  # tool descriptions the model was given
-
-    @property
-    def _llm_type(self) -> str:
-        return "scripted"
-
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
-        self.seen.append(list(messages))
-        reply = self.script[min(len(self.seen), len(self.script)) - 1]
-        return ChatResult(generations=[ChatGeneration(message=reply)])
-
-    def bind_tools(self, tools, **kwargs):
-        self.tool_schemas = [convert_to_openai_tool(t) for t in tools]
-        return self
-
-    def everything_shown_to_model(self) -> str:
-        return json.dumps([m.model_dump() for call in self.seen for m in call], default=str)
-
-
-def call(name: str, call_id: str, **args) -> dict:
-    return {"name": name, "args": args, "id": call_id}
-
-
 def lookups(tx: str, **extra_args) -> AIMessage:
-    return AIMessage(content="", tool_calls=[
+    return ai(
         call("get_transaction", "c1", transaction_id=tx, **extra_args),
         call("get_risk_signals", "c2", transaction_id=tx, **extra_args),
-    ])
+    )
 
 
 def answer(tx: str = MY_TX, score: float = 0.08, level: str = "low") -> AIMessage:
-    return AIMessage(content="", tool_calls=[call(
+    return ai(call(
         "FraudAssessment", "c9", transaction_id=tx, risk_score=score, risk_level=level,
         signals=["known recipient", "usual amount"], rationale="Engine score is low and signals agree.",
-    )])
+    ))
 
 
 def dispute(tx: str = MY_TX, description: str = "I sent money and it never arrived") -> dict:
@@ -90,7 +59,7 @@ def run():
 
 
 def tool_results(model: ScriptedChatModel) -> list[str]:
-    return [str(m.content) for m in model.seen[-1] if isinstance(m, ToolMessage)]
+    return model.tool_results()
 
 
 # --- Happy path -------------------------------------------------------------------------------
@@ -114,11 +83,9 @@ def test_tools_shown_to_the_model_have_no_identity_parameter(run):
     client, model = run([lookups(MY_TX), answer()])
     client.post(URL, json=dispute(), headers=bearer())
 
-    lookup_tools = {t["function"]["name"]: t["function"]["parameters"] for t in model.tool_schemas
-                    if t["function"]["name"].startswith("get_")}
-    assert set(lookup_tools) == {"get_transaction", "get_risk_signals"}
-    for parameters in lookup_tools.values():
-        assert set(parameters["properties"]) == {"transaction_id"}  # no user, customer, or runtime
+    # no user, customer, or runtime parameter is visible to the model
+    assert model.lookup_tool_parameters() == {
+        "get_transaction": {"transaction_id"}, "get_risk_signals": {"transaction_id"}}
 
 
 def test_model_never_sees_any_customer_id(run):
