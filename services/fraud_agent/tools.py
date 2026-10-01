@@ -35,6 +35,13 @@ async def core_get(context: AgentContext, path: str) -> dict | None:
     return body
 
 
+# How identity travels outside the model:
+#   - `transaction_id` is the only parameter the model sees and fills in.
+#   - `runtime: ToolRuntime[...]` is filled in by LangChain and hidden from the model. It carries
+#     `runtime.context`, the AgentContext our code built from the verified JWT (see main.py).
+# So nothing the model writes, and nothing a customer types, can change who the lookup runs as.
+
+
 @tool
 async def get_transaction(transaction_id: TransactionId, runtime: ToolRuntime[AgentContext]) -> dict | str:
     """Get one of the customer's transactions: amount, masked recipient account, creation time,
