@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon test
+.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon test guard-clean build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -118,3 +118,36 @@ kv-addon:
 	az aks enable-addons -g $(AKS_RESOURCE_GROUP) -n $(AKS_CLUSTER_NAME) \
 		--addons azure-keyvault-secrets-provider -o none
 	kubectl get pods -n kube-system -l 'app in (secrets-store-csi-driver,secrets-store-provider-azure)'
+
+# ---------------------------------------------------------------------------------------------
+# Delivery (ADR-0004): make release SERVICE=core-systems
+# ---------------------------------------------------------------------------------------------
+SERVICE ?= core-systems
+SERVICE_DIR = services/$(subst -,_,$(SERVICE))
+IMAGE_TAG := $(shell git rev-parse --short HEAD)
+IMAGE = $(ACR_NAME).azurecr.io/$(SERVICE):$(IMAGE_TAG)
+
+## Refuse to release uncommitted code: every image tag must map to an exact commit
+guard-clean:
+	@git diff --quiet HEAD -- && test -z "$$(git ls-files --others --exclude-standard)" \
+		|| (echo "Uncommitted changes: commit first, image tags must map to a commit (ADR-0004)"; exit 1)
+
+## Build the service image from the repo root (so it can include shared/)
+build:
+	docker build -f $(SERVICE_DIR)/Dockerfile -t $(IMAGE) .
+
+push: acr-login
+	docker push $(IMAGE)
+
+## Apply the namespace and the service manifests with the image pinned to this commit
+deploy:
+	kubectl apply -f k8s/namespace.yaml
+	cat k8s/$(SERVICE)/*.yaml | sed 's|__IMAGE__|$(IMAGE)|' | kubectl apply -f -
+	kubectl rollout status deployment/$(SERVICE) -n $(K8S_NAMESPACE) --timeout=180s
+
+## Call the service from inside the cluster via its ClusterIP DNS name
+smoke:
+	scripts/smoke.sh $(K8S_NAMESPACE) http://$(SERVICE)/healthz
+
+## Full pipeline: clean tree -> tests -> build -> push -> deploy -> smoke
+release: guard-clean test build push deploy smoke

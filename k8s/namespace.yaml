@@ -1,0 +1,11 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: disputes
+  labels:
+    app.kubernetes.io/part-of: dispute-triage
+    # Pod Security Admission: reject any pod that runs as root, escalates privileges,
+    # keeps Linux capabilities, or lacks a seccomp profile.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

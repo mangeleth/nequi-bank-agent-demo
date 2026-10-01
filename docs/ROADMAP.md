@@ -6,7 +6,7 @@ Kubernetes manifests and tests are written alongside each service, not at the en
 | Milestone | Builds | Deployed at the end | Status |
 |---|---|---|---|
 | **M1** Cluster & identity | `Makefile`, `scripts/azure_setup.py` | AKS cluster, verified by `make aks-verify` | Done |
-| **M2** Delivery pipeline + first service | ACR, Key Vault + CSI driver, `shared/schemas.py`, `services/mock_core_systems/` (+ Dockerfile, manifests), `make release` | Mock Core Banking / Risk Engine API, reachable in-cluster | Next |
+| **M2** Delivery pipeline + first service | ACR, Key Vault + CSI driver, `shared/schemas.py`, `services/core_systems/` (+ Dockerfile, manifests), `make release` | Core Banking + Risk Engine API (synthetic data adapter), reachable in-cluster | Next |
 | **M3** Security boundary + Fraud Agent | `shared/auth.py`, `services/fraud_agent/`, Azure OpenAI + Workload Identity federation | Fraud Agent calling mock core and Azure OpenAI with no stored keys | |
 | **M4** Ledger Agent | `services/ledger_agent/` | Ledger Agent querying settlement state | |
 | **M5** Supervisor + tracing | `services/supervisor/` (LangGraph + Langfuse Cloud, keys from Key Vault) | `/disputes/triage` orchestrating both agents, traces in Langfuse | |
