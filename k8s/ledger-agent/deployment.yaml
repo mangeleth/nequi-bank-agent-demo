@@ -1,0 +1,101 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ledger-agent
+  namespace: disputes
+  labels:
+    app.kubernetes.io/name: ledger-agent
+    app.kubernetes.io/part-of: dispute-triage
+  annotations:
+    # Workload Identity: this ServiceAccount is federated to the managed identity id-ledger-agent,
+    # which holds the "Cognitive Services OpenAI User" role (ADR-0001). Not a secret.
+    azure.workload.identity/client-id: ${WI_CLIENT_ID}
+# The pod never calls the Kubernetes API. The Entra ID token exchange uses a separate,
+# short-lived token that the workload identity webhook mounts.
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledger-agent
+  namespace: disputes
+  labels:
+    app.kubernetes.io/name: ledger-agent
+    app.kubernetes.io/part-of: dispute-triage
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ledger-agent
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ledger-agent
+        app.kubernetes.io/part-of: dispute-triage
+        azure.workload.identity/use: "true" # asks the webhook to inject the identity token
+    spec:
+      serviceAccountName: ledger-agent
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: ledger-agent
+      containers:
+        - name: api
+          image: ${IMAGE} # <acr>/ledger-agent:<git-sha>, set by `make deploy`
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: ledger-agent
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              memory: 512Mi
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /readyz, port: http } # not ready while Core Systems is unreachable
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: jwt-public-key
+              mountPath: /etc/jwt
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: jwt-public-key
+          configMap:
+            name: jwt-public-key

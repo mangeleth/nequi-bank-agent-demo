@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token run-core run-fraud run-ledger wi-create jwt-publish smoke-fraud test guard-clean build push deploy smoke release
+.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token run-core run-fraud run-ledger wi-create jwt-publish smoke-fraud smoke-ledger test guard-clean build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -224,6 +224,13 @@ smoke:
 ## their failed transfer, from inside the cluster
 smoke-fraud:
 	scripts/smoke.sh $(K8S_NAMESPACE) http://fraud-agent/v1/fraud/assessments \
+		-H "Authorization: Bearer $$(.venv/bin/python scripts/demo_token.py $(USER_ID))" \
+		-H "Content-Type: application/json" \
+		-d '{"transaction_id":"TX-20261001000001","reason":"failed_transfer","claimed_amount":"50000.00"}'
+
+## End-to-end check of the deployed Ledger Agent (reaches Core Banking over MCP)
+smoke-ledger:
+	scripts/smoke.sh $(K8S_NAMESPACE) http://ledger-agent/v1/ledger/reconciliations \
 		-H "Authorization: Bearer $$(.venv/bin/python scripts/demo_token.py $(USER_ID))" \
 		-H "Content-Type: application/json" \
 		-d '{"transaction_id":"TX-20261001000001","reason":"failed_transfer","claimed_amount":"50000.00"}'
