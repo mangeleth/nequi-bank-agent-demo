@@ -1,2 +1,3 @@
 azure-identity>=1.19
 azure-mgmt-containerservice>=34.0
+langchain-openai>=0.3

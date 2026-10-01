@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon test guard-clean build push deploy smoke release
+.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token run-core run-fraud wi-create jwt-publish smoke-fraud test guard-clean build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -119,6 +119,70 @@ kv-addon:
 		--addons azure-keyvault-secrets-provider -o none
 	kubectl get pods -n kube-system -l 'app in (secrets-store-csi-driver,secrets-store-provider-azure)'
 
+## Create Azure OpenAI (ADR-0010): Entra ID auth only (API keys disabled), one model deployment
+## pinned to an exact version (no automatic upgrades), and permission for the signed-in user
+## to call it. Safe to run twice.
+aoai-create:
+	@if az cognitiveservices account show -g $(AKS_RESOURCE_GROUP) -n $(AOAI_NAME) -o none 2>/dev/null; then \
+		echo "Azure OpenAI $(AOAI_NAME) already exists - skipping create."; \
+	else \
+		az cognitiveservices account create -g $(AKS_RESOURCE_GROUP) -n $(AOAI_NAME) -l $(AZURE_LOCATION) \
+			--kind OpenAI --sku S0 --custom-domain $(AOAI_NAME) --yes -o none; \
+	fi
+	az resource update -o none --set properties.disableLocalAuth=true \
+		--ids $$(az cognitiveservices account show -g $(AKS_RESOURCE_GROUP) -n $(AOAI_NAME) --query id -o tsv)
+	az cognitiveservices account deployment create -g $(AKS_RESOURCE_GROUP) -n $(AOAI_NAME) \
+		--deployment-name $(AOAI_DEPLOYMENT) --model-name $(AOAI_MODEL) --model-format OpenAI \
+		--model-version $(AOAI_MODEL_VERSION) --sku-name Standard --sku-capacity $(AOAI_CAPACITY_K_TPM) -o none
+	az resource update -o none --set properties.versionUpgradeOption=NoAutoUpgrade \
+		--ids $$(az cognitiveservices account deployment show -g $(AKS_RESOURCE_GROUP) -n $(AOAI_NAME) \
+			--deployment-name $(AOAI_DEPLOYMENT) --query id -o tsv)
+	az role assignment create -o none \
+		--assignee $$(az ad signed-in-user show --query id -o tsv) \
+		--role "Cognitive Services OpenAI User" \
+		--scope $$(az cognitiveservices account show -g $(AKS_RESOURCE_GROUP) -n $(AOAI_NAME) --query id -o tsv)
+
+## Call the model with temperature 0 using your Entra ID login (no API key)
+aoai-check:
+	.venv/bin/python scripts/aoai_check.py
+
+## Give a service's pods their own Azure identity (Workload Identity, ADR-0001): a managed
+## identity, permission to call Azure OpenAI, and trust in the service's Kubernetes ServiceAccount.
+## Safe to run twice. Usage: make wi-create SERVICE=fraud-agent
+wi-create:
+	az identity create -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) -l $(AZURE_LOCATION) -o none
+	az role assignment create -o none \
+		--assignee-object-id $$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) --query principalId -o tsv) \
+		--assignee-principal-type ServicePrincipal \
+		--role "Cognitive Services OpenAI User" \
+		--scope $$(az cognitiveservices account show -g $(AKS_RESOURCE_GROUP) -n $(AOAI_NAME) --query id -o tsv)
+	az identity federated-credential create -o none \
+		--name aks-$(K8S_NAMESPACE)-$(SERVICE) --identity-name id-$(SERVICE) -g $(AKS_RESOURCE_GROUP) \
+		--issuer $$(az aks show -g $(AKS_RESOURCE_GROUP) -n $(AKS_CLUSTER_NAME) --query oidcIssuerProfile.issuerUrl -o tsv) \
+		--subject system:serviceaccount:$(K8S_NAMESPACE):$(SERVICE) \
+		--audiences api://AzureADTokenExchange
+
+## Publish the demo identity provider's PUBLIC key to the cluster (it verifies tokens; not a secret)
+jwt-publish:
+	@test -f .local/jwt-public.pem || .venv/bin/python scripts/demo_token.py user-1001 >/dev/null
+	kubectl create configmap jwt-public-key -n $(K8S_NAMESPACE) \
+		--from-file=jwt-public.pem=.local/jwt-public.pem --dry-run=client -o yaml | kubectl apply -f -
+
+# ---------------------------------------------------------------------------------------------
+# Local development: run each in its own terminal, then call the agent with a demo token
+# ---------------------------------------------------------------------------------------------
+USER_ID ?= user-1001
+
+## Print a 15-minute login token for a synthetic customer (creates .local/ keys on first use)
+demo-token:
+	@.venv/bin/python scripts/demo_token.py $(USER_ID)
+
+run-core:
+	.venv/bin/uvicorn services.core_systems.app:app --port 8001
+
+run-fraud:
+	.venv/bin/uvicorn services.fraud_agent.main:create_app --factory --port 8002
+
 # ---------------------------------------------------------------------------------------------
 # Delivery (ADR-0004): make release SERVICE=core-systems
 # ---------------------------------------------------------------------------------------------
@@ -139,15 +203,27 @@ build:
 push: acr-login
 	docker push $(IMAGE)
 
-## Apply the namespace and the service manifests with the image pinned to this commit
+## Apply the namespace and the service manifests. ${...} placeholders are filled from .env, the
+## image is pinned to this commit, and WI_CLIENT_ID is the service's managed identity (if any).
 deploy:
 	kubectl apply -f k8s/namespace.yaml
-	cat k8s/$(SERVICE)/*.yaml | sed 's|__IMAGE__|$(IMAGE)|' | kubectl apply -f -
+	cat k8s/$(SERVICE)/*.yaml \
+		| IMAGE=$(IMAGE) WI_CLIENT_ID=$$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) --query clientId -o tsv 2>/dev/null) \
+		  envsubst '$$IMAGE $$WI_CLIENT_ID $$AOAI_NAME $$AOAI_DEPLOYMENT $$AOAI_API_VERSION $$JWT_ISSUER $$JWT_AUDIENCE' \
+		| kubectl apply -f -
 	kubectl rollout status deployment/$(SERVICE) -n $(K8S_NAMESPACE) --timeout=180s
 
 ## Call the service from inside the cluster via its ClusterIP DNS name
 smoke:
 	scripts/smoke.sh $(K8S_NAMESPACE) http://$(SERVICE)/healthz
+
+## End-to-end check of the deployed Fraud Agent: log in as a synthetic customer and dispute
+## their failed transfer, from inside the cluster
+smoke-fraud:
+	scripts/smoke.sh $(K8S_NAMESPACE) http://fraud-agent/v1/fraud/assessments \
+		-H "Authorization: Bearer $$(.venv/bin/python scripts/demo_token.py $(USER_ID))" \
+		-H "Content-Type: application/json" \
+		-d '{"transaction_id":"TX-20261001000001","reason":"failed_transfer","claimed_amount":"50000.00"}'
 
 ## Full pipeline: clean tree -> tests -> build -> push -> deploy -> smoke
 release: guard-clean test build push deploy smoke

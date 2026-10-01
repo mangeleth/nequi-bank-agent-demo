@@ -10,3 +10,4 @@ docs
 tests
 k8s
 scripts
+.local
