@@ -1,0 +1,5 @@
+-r scripts/requirements.txt
+-r shared/requirements.txt
+-r services/core_systems/requirements.txt
+pytest>=8
+httpx>=0.28

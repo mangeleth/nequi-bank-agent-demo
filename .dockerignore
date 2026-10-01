@@ -1,0 +1,12 @@
+# Keep secrets, local tooling, and non-runtime files out of every image.
+.env
+.env.*
+.git
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+docs
+tests
+k8s
+scripts

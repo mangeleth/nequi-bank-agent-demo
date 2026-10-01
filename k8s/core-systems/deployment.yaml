@@ -1,0 +1,90 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: core-systems
+  namespace: disputes
+  labels:
+    app.kubernetes.io/name: core-systems
+    app.kubernetes.io/part-of: dispute-triage
+# This service never calls the Kubernetes API, so it gets no API token.
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: core-systems
+  namespace: disputes
+  labels:
+    app.kubernetes.io/name: core-systems
+    app.kubernetes.io/part-of: dispute-triage
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5 # previous versions kept for `kubectl rollout undo`
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: core-systems
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0 # never drop below 2 ready pods during a deploy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: core-systems
+        app.kubernetes.io/part-of: dispute-triage
+    spec:
+      serviceAccountName: core-systems
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      # Spread the 2 replicas across our 2 nodes, so losing one node keeps the service up.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: core-systems
+      containers:
+        - name: api
+          image: __IMAGE__ # replaced by `make deploy` with <acr>/core-systems:<git-sha>
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: CORE_SYSTEMS_BACKEND
+              value: in_memory
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              memory: 256Mi # no CPU limit: avoids throttling; requests guarantee the share
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
