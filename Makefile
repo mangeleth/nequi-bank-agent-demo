@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start
+.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -21,6 +21,8 @@ providers:
 	az provider register --namespace Microsoft.ContainerService --wait
 	az provider register --namespace Microsoft.CognitiveServices --wait
 	az provider register --namespace Microsoft.OperationalInsights --wait
+	az provider register --namespace Microsoft.ContainerRegistry --wait
+	az provider register --namespace Microsoft.KeyVault --wait
 
 ## Create the resource group (az group create is naturally idempotent)
 rg-create:
@@ -71,3 +73,44 @@ aks-stop:
 
 aks-start:
 	az aks start -g $(AKS_RESOURCE_GROUP) -n $(AKS_CLUSTER_NAME)
+
+## Create the container registry (Basic SKU, admin user disabled; ADR-0004). Skips if it exists.
+acr-create:
+	@if az acr show -n $(ACR_NAME) -o none 2>/dev/null; then \
+		echo "Registry $(ACR_NAME) already exists - skipping create."; \
+	else \
+		az acr create -g $(AKS_RESOURCE_GROUP) -n $(ACR_NAME) -l $(AZURE_LOCATION) \
+			--sku Basic --admin-enabled false -o table; \
+	fi
+
+## Let the cluster pull images: grants the kubelet identity AcrPull (no imagePullSecrets).
+## (`az aks check-acr` is not used: it needs local accounts, which ADR-0002 disables.)
+acr-attach:
+	az aks update -g $(AKS_RESOURCE_GROUP) -n $(AKS_CLUSTER_NAME) --attach-acr $(ACR_NAME) -o none
+	az role assignment list -o table --query "[].roleDefinitionName" \
+		--assignee $$(az aks show -g $(AKS_RESOURCE_GROUP) -n $(AKS_CLUSTER_NAME) --query identityProfile.kubeletidentity.objectId -o tsv) \
+		--scope $$(az acr show -n $(ACR_NAME) --query id -o tsv)
+
+## Log Docker in to the registry with your Entra ID token (short-lived, no password)
+acr-login:
+	az acr login -n $(ACR_NAME)
+
+## Create the Key Vault in RBAC mode (ADR-0005) and let the signed-in user manage secrets.
+## Even the subscription Owner cannot read secrets in RBAC mode until granted a data-plane role.
+kv-create:
+	@if az keyvault show -n $(KEYVAULT_NAME) -o none 2>/dev/null; then \
+		echo "Key Vault $(KEYVAULT_NAME) already exists - skipping create."; \
+	else \
+		az keyvault create -g $(AKS_RESOURCE_GROUP) -n $(KEYVAULT_NAME) -l $(AZURE_LOCATION) \
+			--enable-rbac-authorization true -o table; \
+	fi
+	az role assignment create -o none \
+		--assignee $$(az ad signed-in-user show --query id -o tsv) \
+		--role "Key Vault Secrets Officer" \
+		--scope $$(az keyvault show -n $(KEYVAULT_NAME) --query id -o tsv)
+
+## Install the Secrets Store CSI driver + Azure Key Vault provider on the cluster
+kv-addon:
+	az aks enable-addons -g $(AKS_RESOURCE_GROUP) -n $(AKS_CLUSTER_NAME) \
+		--addons azure-keyvault-secrets-provider -o none
+	kubectl get pods -n kube-system -l 'app in (secrets-store-csi-driver,secrets-store-provider-azure)'
