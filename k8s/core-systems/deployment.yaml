@@ -51,6 +51,9 @@ spec:
           labelSelector:
             matchLabels:
               app.kubernetes.io/name: core-systems
+          # Count only pods of the same release, so a rolling update spreads the new pods
+          # across nodes instead of balancing them against the old ones.
+          matchLabelKeys: ["pod-template-hash"]
       containers:
         - name: api
           image: ${IMAGE} # <acr>/core-systems:<git-sha>, set by `make deploy`

@@ -45,6 +45,21 @@ The Ledger Agent states what the ledger shows happened to a disputed transaction
   server could try to steer the model through them (tool poisoning). The allow-list limits
   which tools exist, not what their descriptions say.
 
+## Trade-off: where MCP is the wrong choice
+For this dispute-triage PoC, MCP is the right choice: it gives agents dynamic tool discovery and
+a clean abstraction layer that shields them from Core Banking's internal schemas. It is not
+free: every call is JSON-RPC over HTTP.
+
+- In high-throughput synchronous paths handling tens of thousands of requests per second
+  (payment authorization, real-time fraud scoring), we would bypass the JSON-RPC overhead with
+  direct gRPC, or move the work to an event-driven Kafka consumer.
+- Dispute triage is latency-tolerant. Each model call takes 2-4 seconds, while an MCP round trip
+  takes milliseconds (the connect-and-lookup path measured about 12 ms locally). Here the
+  governance and schema-decoupling benefits far outweigh the latency overhead.
+
+This PoC runs an MCP *server* inside Core Systems. A central MCP *gateway* in front of several
+servers is a production step (below).
+
 ## Production delta
 MCP authorization per the specification (OAuth 2.1 resource server validating the user's token)
 or mTLS between services, instead of a trusted header; pin and review tool descriptions and

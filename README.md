@@ -114,6 +114,12 @@ Limits are configuration (`AUTO_REFUND_*` env vars), with a kill switch `AUTO_RE
 In both, the model chooses what to look up and code decides for whom
 ([ADR-0011](docs/adr/0011-fraud-agent-design.md), [ADR-0012](docs/adr/0012-ledger-agent-over-mcp.md)).
 
+**Why MCP here, and where not:** MCP gives agents dynamic tool discovery and shields them from
+Core Banking's internal schemas. For a latency-tolerant workflow like dispute triage (model calls
+take seconds, an MCP call takes milliseconds) those governance and decoupling benefits far
+outweigh the overhead. In synchronous paths at tens of thousands of requests per second we would
+use direct gRPC or an event-driven Kafka consumer instead of JSON-RPC.
+
 ## Run it locally
 
 ```bash
