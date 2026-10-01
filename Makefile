@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon test guard-clean build push deploy smoke release
+.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check test guard-clean build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -118,6 +118,33 @@ kv-addon:
 	az aks enable-addons -g $(AKS_RESOURCE_GROUP) -n $(AKS_CLUSTER_NAME) \
 		--addons azure-keyvault-secrets-provider -o none
 	kubectl get pods -n kube-system -l 'app in (secrets-store-csi-driver,secrets-store-provider-azure)'
+
+## Create Azure OpenAI (ADR-0010): Entra ID auth only (API keys disabled), one model deployment
+## pinned to an exact version (no automatic upgrades), and permission for the signed-in user
+## to call it. Safe to run twice.
+aoai-create:
+	@if az cognitiveservices account show -g $(AKS_RESOURCE_GROUP) -n $(AOAI_NAME) -o none 2>/dev/null; then \
+		echo "Azure OpenAI $(AOAI_NAME) already exists - skipping create."; \
+	else \
+		az cognitiveservices account create -g $(AKS_RESOURCE_GROUP) -n $(AOAI_NAME) -l $(AZURE_LOCATION) \
+			--kind OpenAI --sku S0 --custom-domain $(AOAI_NAME) --yes -o none; \
+	fi
+	az resource update -o none --set properties.disableLocalAuth=true \
+		--ids $$(az cognitiveservices account show -g $(AKS_RESOURCE_GROUP) -n $(AOAI_NAME) --query id -o tsv)
+	az cognitiveservices account deployment create -g $(AKS_RESOURCE_GROUP) -n $(AOAI_NAME) \
+		--deployment-name $(AOAI_DEPLOYMENT) --model-name $(AOAI_MODEL) --model-format OpenAI \
+		--model-version $(AOAI_MODEL_VERSION) --sku-name Standard --sku-capacity $(AOAI_CAPACITY_K_TPM) -o none
+	az resource update -o none --set properties.versionUpgradeOption=NoAutoUpgrade \
+		--ids $$(az cognitiveservices account deployment show -g $(AKS_RESOURCE_GROUP) -n $(AOAI_NAME) \
+			--deployment-name $(AOAI_DEPLOYMENT) --query id -o tsv)
+	az role assignment create -o none \
+		--assignee $$(az ad signed-in-user show --query id -o tsv) \
+		--role "Cognitive Services OpenAI User" \
+		--scope $$(az cognitiveservices account show -g $(AKS_RESOURCE_GROUP) -n $(AOAI_NAME) --query id -o tsv)
+
+## Call the model with temperature 0 using your Entra ID login (no API key)
+aoai-check:
+	.venv/bin/python scripts/aoai_check.py
 
 # ---------------------------------------------------------------------------------------------
 # Delivery (ADR-0004): make release SERVICE=core-systems
