@@ -1,0 +1,17 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fraud-agent
+  namespace: disputes
+  labels:
+    app.kubernetes.io/name: fraud-agent
+    app.kubernetes.io/part-of: dispute-triage
+spec:
+  type: ClusterIP # reachable only from inside the cluster: http://fraud-agent.disputes
+  selector:
+    app.kubernetes.io/name: fraud-agent
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

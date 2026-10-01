@@ -1,0 +1,20 @@
+---
+# Non-secret settings. ${...} values are filled from .env by `make deploy`.
+# The JWT public key lives in its own ConfigMap (`make jwt-publish`): it can verify tokens,
+# not sign them, so it is not a secret (ADR-0009).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fraud-agent
+  namespace: disputes
+  labels:
+    app.kubernetes.io/name: fraud-agent
+    app.kubernetes.io/part-of: dispute-triage
+data:
+  CORE_SYSTEMS_URL: http://core-systems # ClusterIP Service DNS name
+  AOAI_NAME: ${AOAI_NAME}
+  AOAI_DEPLOYMENT: ${AOAI_DEPLOYMENT}
+  AOAI_API_VERSION: ${AOAI_API_VERSION}
+  JWT_ISSUER: ${JWT_ISSUER}
+  JWT_AUDIENCE: ${JWT_AUDIENCE}
+  JWT_PUBLIC_KEY_FILE: /etc/jwt/jwt-public.pem
