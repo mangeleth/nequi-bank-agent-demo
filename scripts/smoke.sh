@@ -12,8 +12,10 @@ args='"-sS", "--fail-with-body", "--max-time", "10"'
 [[ -n "$header" ]] && args+=", \"-H\", \"$header\""
 args+=", \"$url\""
 
-kubectl run "smoke-$(date +%s)" -n "$namespace" --rm -i --quiet --restart=Never --image="$image" \
-  --overrides="{
+pod="smoke-$(date +%s)"
+trap 'kubectl delete pod "$pod" -n "$namespace" --ignore-not-found --wait=false >/dev/null' EXIT
+
+kubectl run "$pod" -n "$namespace" --restart=Never --image="$image" --overrides="{
     \"spec\": {
       \"securityContext\": {\"runAsNonRoot\": true, \"runAsUser\": 100, \"seccompProfile\": {\"type\": \"RuntimeDefault\"}},
       \"containers\": [{
@@ -21,5 +23,14 @@ kubectl run "smoke-$(date +%s)" -n "$namespace" --rm -i --quiet --restart=Never 
         \"securityContext\": {\"allowPrivilegeEscalation\": false, \"capabilities\": {\"drop\": [\"ALL\"]}}
       }]
     }
-  }"
+  }" >/dev/null
+
+# Wait for curl to finish (not just start), then print its output once.
+for _ in $(seq 60); do
+  phase=$(kubectl get pod "$pod" -n "$namespace" -o jsonpath='{.status.phase}')
+  [[ "$phase" == "Succeeded" || "$phase" == "Failed" ]] && break
+  sleep 1
+done
+kubectl logs "$pod" -n "$namespace"
 echo
+[[ "$phase" == "Succeeded" ]]
