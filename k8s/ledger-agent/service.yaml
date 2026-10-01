@@ -1,0 +1,17 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledger-agent
+  namespace: disputes
+  labels:
+    app.kubernetes.io/name: ledger-agent
+    app.kubernetes.io/part-of: dispute-triage
+spec:
+  type: ClusterIP # reachable only from inside the cluster: http://ledger-agent.disputes
+  selector:
+    app.kubernetes.io/name: ledger-agent
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

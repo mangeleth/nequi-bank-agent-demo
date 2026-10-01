@@ -103,6 +103,23 @@ flowchart TD
 
 Limits are configuration (`AUTO_REFUND_*` env vars), with a kill switch `AUTO_REFUND_ENABLED=false`.
 
+## Two ways an agent gets its tools
+
+| | Fraud Agent | Ledger Agent |
+|---|---|---|
+| Tools are | Python functions in the agent's own code | Published by Core Banking over **MCP** and discovered at run time |
+| Identity travels | In LangChain's hidden `ToolRuntime` context | As a header on the MCP connection |
+| Extra safeguard | Arguments validated before any request | Tool allow-list, and the agent's figures are checked against the ledger |
+
+In both, the model chooses what to look up and code decides for whom
+([ADR-0011](docs/adr/0011-fraud-agent-design.md), [ADR-0012](docs/adr/0012-ledger-agent-over-mcp.md)).
+
+**Why MCP here, and where not:** MCP gives agents dynamic tool discovery and shields them from
+Core Banking's internal schemas. For a latency-tolerant workflow like dispute triage (model calls
+take seconds, an MCP call takes milliseconds) those governance and decoupling benefits far
+outweigh the overhead. In synchronous paths at tens of thousands of requests per second we would
+use direct gRPC or an event-driven Kafka consumer instead of JSON-RPC.
+
 ## Run it locally
 
 ```bash
@@ -110,8 +127,9 @@ make venv                 # install dependencies
 make test                 # unit tests (no network, the LLM is scripted)
 make run-core             # terminal 1: Core Banking + Risk Engine on :8001
 make run-fraud            # terminal 2: Fraud Agent on :8002 (needs `az login` for Azure OpenAI)
+make run-ledger           # terminal 3: Ledger Agent on :8003 (talks to Core Banking over MCP)
 
-# terminal 3: log in as a synthetic customer and dispute a transaction
+# terminal 4: log in as a synthetic customer and dispute a transaction
 TOKEN=$(make demo-token USER_ID=user-1001)
 curl -s -X POST localhost:8002/v1/fraud/assessments \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \

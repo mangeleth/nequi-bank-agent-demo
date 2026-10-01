@@ -32,6 +32,7 @@ def ledger(debited="50000.00", credited="0", status=SettlementStatus.FAILED, tx=
     return LedgerReconciliation(
         transaction_id=tx, settlement_status=status,
         debited_amount=Decimal(debited), credited_amount=Decimal(credited),
+        summary="Debited, never credited.",
     )
 
 

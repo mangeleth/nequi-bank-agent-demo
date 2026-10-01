@@ -1,5 +1,11 @@
+import json
+from contextlib import asynccontextmanager
+
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
+from mcp import Client
+from mcp.client.streamable_http import streamable_http_client
 
 from services.core_systems.app import _build_adapters, app
 
@@ -78,3 +84,69 @@ def test_adapter_can_be_swapped_without_touching_the_api(client):
         assert client.get("/readyz").status_code == 503
     finally:
         app.state.ledger = original
+
+
+# --- MCP front door (/mcp) --------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def mcp_client(customer_id: str | None, host: str = "core-systems"):
+    """An MCP client talking to the Core Systems app in-process, as the given customer."""
+    headers = {"X-Customer-Id": customer_id} if customer_id else {}
+    # Start the app and connect inside one `async with`, so startup and shutdown share a task.
+    async with app.router.lifespan_context(app):
+        http = httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), headers=headers)
+        async with Client(streamable_http_client(f"http://{host}/mcp", http_client=http)) as client:
+            yield client
+
+
+async def call_json(client: Client, name: str, arguments: dict) -> dict:
+    result = await client.call_tool(name, arguments)
+    assert not result.is_error, result.content
+    return json.loads(result.content[0].text)
+
+
+async def test_mcp_tools_have_no_identity_parameter():
+    async with mcp_client("user-1001") as client:
+        tools = {tool.name: tool.input_schema["properties"] for tool in (await client.list_tools()).tools}
+    assert set(tools) == {"get_transaction", "get_refund_history"}
+    assert set(tools["get_transaction"]) == {"transaction_id"}
+    assert set(tools["get_refund_history"]) == {"window_days"}
+
+
+async def test_mcp_owner_reads_transaction_without_customer_id_in_the_result():
+    async with mcp_client("user-1001") as client:
+        body = await call_json(client, "get_transaction", {"transaction_id": "TX-20261001000001"})
+    assert body["settlement_status"] == "failed" and body["debited_amount"] == "50000.00"
+    assert "customer_id" not in body
+
+
+async def test_mcp_other_customers_transaction_is_not_found():
+    async with mcp_client("user-1002") as client:
+        body = await call_json(client, "get_transaction", {"transaction_id": "TX-20261001000001"})
+    assert body == {"error": "No such transaction for this customer."}
+
+
+async def test_mcp_refund_history_is_scoped_to_the_caller():
+    async with mcp_client("user-1003") as client:
+        body = await call_json(client, "get_refund_history", {"window_days": 30})
+    assert body == {"window_days": 30, "auto_refund_count": 3, "auto_refund_total": "65000.00"}
+
+
+@pytest.mark.parametrize("customer_id", [None, "admin"])
+async def test_mcp_call_without_a_valid_customer_is_an_error(customer_id):
+    async with mcp_client(customer_id) as client:
+        result = await client.call_tool("get_transaction", {"transaction_id": "TX-20261001000001"})
+    assert result.is_error
+
+
+async def test_mcp_rejects_malformed_transaction_id():
+    async with mcp_client("user-1001") as client:
+        result = await client.call_tool("get_transaction", {"transaction_id": "TX-1/../../readyz"})
+    assert result.is_error
+
+
+async def test_mcp_rejects_unexpected_host_header():
+    with pytest.raises(Exception):  # noqa: B017 - DNS rebinding protection refuses the connection
+        async with mcp_client("user-1001", host="evil.example") as client:
+            await client.list_tools()
