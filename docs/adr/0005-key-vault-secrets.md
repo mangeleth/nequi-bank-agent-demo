@@ -1,6 +1,6 @@
 # ADR-0005: Azure Key Vault for secrets, mounted via Secrets Store CSI driver
 
-- **Status:** Accepted
+- **Status:** Accepted (`jwt-signing-key` handling refined by ADR-0009)
 - **Date:** 2026-10-01
 - **Milestone:** M2
 

@@ -13,6 +13,7 @@ To change a decision, add a new ADR that supersedes the old one, and mark the ol
 | [0006](0006-pydantic-contracts.md) | Pydantic v2 contracts as the trust boundary for LLM output | Accepted (amended by 0007) | M2 |
 | [0007](0007-tiered-refund-approval.md) | Tiered refund approval: deterministic auto-approval for small, clear cases | Accepted | M2 |
 | [0008](0008-core-systems-ports-and-adapters.md) | Core Systems service built as production code, with swappable data adapters | Accepted | M2 |
+| [0009](0009-caller-identity-from-verified-jwt.md) | Caller identity comes only from a verified, asymmetrically signed JWT | Accepted | M3 |
 
 ## Template
 
