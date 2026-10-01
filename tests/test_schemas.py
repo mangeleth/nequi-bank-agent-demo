@@ -1,14 +1,17 @@
 from datetime import UTC, datetime
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
 
 from shared.schemas import (
+    ApprovalRoute,
+    PolicyCheck,
+    RefundApproval,
     Decision,
     DisputeReason,
     DisputeRequest,
-    DisputeStatus,
     DisputeVerdict,
     FraudAssessment,
     LedgerReconciliation,
@@ -27,10 +30,8 @@ def make_request(**overrides):
 def make_verdict(**overrides):
     data = {
         "transaction_id": TX,
-        "status": DisputeStatus.PENDING_HUMAN_APPROVAL,
         "decision": Decision.REFUND_RECOMMENDED,
         "refund_amount": Decimal("150000.00"),
-        "requires_human_approval": True,
         "explanation": "Debited but never credited.",
         "decided_at": datetime.now(UTC),
     }
@@ -92,29 +93,37 @@ def test_llm_cannot_invent_fields():
         )
 
 
-# --- Human in the loop ------------------------------------------------------------------------
+# --- Recommendation only ---------------------------------------------------------------------
 
 
-def test_refund_recommendation_is_valid_with_human_approval():
-    assert make_verdict().requires_human_approval
+def test_verdict_has_no_way_to_approve_or_execute():
+    fields = set(DisputeVerdict.model_fields)
+    assert not fields & {"approved", "refund_approved", "requires_human_approval", "route", "status"}
+    assert "refund_executed" not in {d.value for d in Decision}
 
 
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        {"requires_human_approval": False},
-        {"status": DisputeStatus.RESOLVED},
-        {"refund_amount": None},
-    ],
-)
-def test_refund_cannot_skip_human_approval(overrides):
-    with pytest.raises(ValidationError):
-        make_verdict(**overrides)
+def test_llm_cannot_self_approve():
+    with pytest.raises(ValidationError, match="route"):
+        make_verdict(route="auto_approved")
+
+
+def test_refund_recommendation_requires_amount():
+    with pytest.raises(ValidationError, match="requires refund_amount"):
+        make_verdict(refund_amount=None)
 
 
 def test_refund_amount_only_with_refund_decision():
     with pytest.raises(ValidationError, match="only allowed"):
-        make_verdict(decision=Decision.NO_ACTION, status=DisputeStatus.RESOLVED, requires_human_approval=False)
+        make_verdict(decision=Decision.NO_ACTION)
+
+
+def test_auto_approval_cannot_hide_a_failed_check():
+    with pytest.raises(ValidationError, match="every check"):
+        RefundApproval(
+            dispute_id=uuid4(), transaction_id=TX, route=ApprovalRoute.AUTO_APPROVED,
+            approved_amount=Decimal("1.00"), policy_version="v", evaluated_at=datetime.now(UTC),
+            checks=[PolicyCheck(name="fraud_risk_low", passed=False, detail="high")],
+        )
 
 
 @pytest.mark.parametrize("field", ["debited_amount", "credited_amount"])

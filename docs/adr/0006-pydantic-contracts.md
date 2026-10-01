@@ -1,6 +1,6 @@
 # ADR-0006: Pydantic v2 contracts as the trust boundary for LLM output
 
-- **Status:** Accepted
+- **Status:** Accepted (human-approval rule amended by ADR-0007)
 - **Date:** 2026-10-01
 - **Milestone:** M2
 

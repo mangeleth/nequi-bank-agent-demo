@@ -4,7 +4,8 @@ Design rules (ADR-0006):
   - Money is Decimal, never float.
   - Every model rejects unknown fields, so an LLM cannot invent `refund_approved: true`.
   - No contract accepts a caller-supplied `user_id`: identity comes from the verified JWT (Step 3).
-  - A refund can only ever be *recommended*; executing it requires a human approval.
+  - The LLM can only *recommend* a refund (DisputeVerdict). Whether it runs automatically or
+    waits for a human is decided by deterministic code (RefundApproval, ADR-0007).
 """
 
 from datetime import datetime
@@ -133,26 +134,63 @@ class LedgerReconciliation(Contract):
 
 
 class DisputeVerdict(Contract):
-    """Supervisor's final answer. Recommending a refund always requires human approval."""
+    """Supervisor's (LLM) final answer: a recommendation only. It cannot approve or execute anything."""
 
     dispute_id: UUID = Field(default_factory=uuid4)
     transaction_id: TransactionId
-    status: DisputeStatus
     decision: Decision
     refund_amount: Money | None = None
-    requires_human_approval: bool
     explanation: str = Field(max_length=1000)
     decided_at: datetime
 
     @model_validator(mode="after")
-    def refunds_need_a_human(self) -> "DisputeVerdict":
-        if self.decision == Decision.REFUND_RECOMMENDED:
-            if self.refund_amount is None:
-                raise ValueError("refund_recommended requires refund_amount")
-            if not self.requires_human_approval:
-                raise ValueError("refund_recommended must set requires_human_approval=True (HITL)")
-            if self.status != DisputeStatus.PENDING_HUMAN_APPROVAL:
-                raise ValueError("refund_recommended must be in status pending_human_approval")
-        elif self.refund_amount is not None:
+    def amount_only_with_refund(self) -> "DisputeVerdict":
+        if self.decision == Decision.REFUND_RECOMMENDED and self.refund_amount is None:
+            raise ValueError("refund_recommended requires refund_amount")
+        if self.decision != Decision.REFUND_RECOMMENDED and self.refund_amount is not None:
             raise ValueError(f"refund_amount is only allowed with {Decision.REFUND_RECOMMENDED}")
         return self
+
+
+# --- Deterministic approval (no LLM) ---------------------------------------------------------
+
+
+class ApprovalRoute(StrEnum):
+    AUTO_APPROVED = "auto_approved"  # every policy check passed: refund may execute
+    HUMAN_REQUIRED = "human_required"  # at least one check failed: goes to the review queue
+
+
+class PolicyCheck(Contract):
+    """One rule of the refund policy, recorded for the audit trail."""
+
+    name: str
+    passed: bool
+    detail: str
+
+
+class RefundApproval(Contract):
+    """Output of shared.refund_policy.evaluate(): who approves the refund, and why."""
+
+    dispute_id: UUID
+    transaction_id: TransactionId
+    route: ApprovalRoute
+    approved_amount: Money | None = None  # taken from the ledger, never from the LLM
+    checks: list[PolicyCheck]
+    policy_version: str
+    evaluated_at: datetime
+
+    @model_validator(mode="after")
+    def auto_only_if_every_check_passed(self) -> "RefundApproval":
+        failed = [c.name for c in self.checks if not c.passed]
+        if self.route == ApprovalRoute.AUTO_APPROVED:
+            if failed or not self.checks:
+                raise ValueError(f"auto_approved requires every check to pass (failed: {failed})")
+            if self.approved_amount is None:
+                raise ValueError("auto_approved requires approved_amount")
+        elif self.approved_amount is not None:
+            raise ValueError("approved_amount is only set when auto_approved; a human sets it otherwise")
+        return self
+
+    @property
+    def status(self) -> DisputeStatus:
+        return DisputeStatus.RESOLVED if self.route == ApprovalRoute.AUTO_APPROVED else DisputeStatus.PENDING_HUMAN_APPROVAL
