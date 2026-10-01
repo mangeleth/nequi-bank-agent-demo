@@ -102,3 +102,21 @@ flowchart TD
 ⬜ Grey = validated Pydantic contracts ([field formats](shared/schemas.py))
 
 Limits are configuration (`AUTO_REFUND_*` env vars), with a kill switch `AUTO_REFUND_ENABLED=false`.
+
+## Run it locally
+
+```bash
+make venv                 # install dependencies
+make test                 # unit tests (no network, the LLM is scripted)
+make run-core             # terminal 1: Core Banking + Risk Engine on :8001
+make run-fraud            # terminal 2: Fraud Agent on :8002 (needs `az login` for Azure OpenAI)
+
+# terminal 3: log in as a synthetic customer and dispute a transaction
+TOKEN=$(make demo-token USER_ID=user-1001)
+curl -s -X POST localhost:8002/v1/fraud/assessments \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"transaction_id":"TX-20261001000001","reason":"failed_transfer","claimed_amount":"50000.00"}'
+```
+
+The synthetic customers and transactions are listed in
+[`services/core_systems/adapters/fixtures.py`](services/core_systems/adapters/fixtures.py).

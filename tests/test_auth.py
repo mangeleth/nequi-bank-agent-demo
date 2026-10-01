@@ -4,43 +4,12 @@ import hmac
 import json
 from datetime import UTC, datetime, timedelta
 
-import jwt
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
 
 from shared.auth import AuthError, AuthSettings, bearer_token, verify_token
+from tests.jwt_helpers import AUDIENCE, ISSUER, PUBLIC_KEY, SETTINGS, claims, keypair, sign
 
-ISSUER = "https://idp.nequi.demo"
-AUDIENCE = "dispute-triage"
-
-
-def _keypair() -> tuple[str, str]:
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    private = key.private_bytes(
-        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
-    ).decode()
-    public = key.public_key().public_bytes(
-        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
-    ).decode()
-    return private, public
-
-
-PRIVATE_KEY, PUBLIC_KEY = _keypair()
-ATTACKER_PRIVATE_KEY, _ = _keypair()
-SETTINGS = AuthSettings(issuer=ISSUER, audience=AUDIENCE, public_key=PUBLIC_KEY)
-
-
-def claims(**overrides) -> dict:
-    now = datetime.now(UTC)
-    base = {"iss": ISSUER, "aud": AUDIENCE, "sub": "user-1001", "jti": "login-abc123",
-            "iat": now, "exp": now + timedelta(minutes=15)}
-    merged = base | overrides
-    return {k: v for k, v in merged.items() if v is not None}  # None removes a claim
-
-
-def sign(payload: dict, key: str = PRIVATE_KEY, algorithm: str = "RS256") -> str:
-    return jwt.encode(payload, key, algorithm=algorithm)
+ATTACKER_PRIVATE_KEY, _ = keypair()
 
 
 def _b64(data: bytes) -> str:

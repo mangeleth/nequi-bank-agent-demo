@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check test guard-clean build push deploy smoke release
+.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token run-core run-fraud test guard-clean build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -145,6 +145,21 @@ aoai-create:
 ## Call the model with temperature 0 using your Entra ID login (no API key)
 aoai-check:
 	.venv/bin/python scripts/aoai_check.py
+
+# ---------------------------------------------------------------------------------------------
+# Local development: run each in its own terminal, then call the agent with a demo token
+# ---------------------------------------------------------------------------------------------
+USER_ID ?= user-1001
+
+## Print a 15-minute login token for a synthetic customer (creates .local/ keys on first use)
+demo-token:
+	@.venv/bin/python scripts/demo_token.py $(USER_ID)
+
+run-core:
+	.venv/bin/uvicorn services.core_systems.app:app --port 8001
+
+run-fraud:
+	.venv/bin/uvicorn services.fraud_agent.main:create_app --factory --port 8002
 
 # ---------------------------------------------------------------------------------------------
 # Delivery (ADR-0004): make release SERVICE=core-systems
