@@ -318,9 +318,9 @@ smoke-ledger:
 		-H "Content-Type: application/json" \
 		-d '{"transaction_id":"TX-20261001000001","reason":"failed_transfer","claimed_amount":"50000.00"}'
 
-## End-to-end check of the whole system through the deployed supervisor
+## Submit a dispute to the deployed supervisor (answers 202; follow it with GET /v1/disputes/<id>)
 smoke-triage:
-	scripts/smoke.sh $(K8S_NAMESPACE) http://supervisor/v1/disputes/triage \
+	scripts/smoke.sh $(K8S_NAMESPACE) http://supervisor/v1/disputes \
 		-H "Authorization: Bearer $$(.venv/bin/python scripts/demo_token.py $(USER_ID))" \
 		-H "Content-Type: application/json" \
 		-d '{"transaction_id":"$(TX)","reason":"failed_transfer","claimed_amount":"50000.00"}'

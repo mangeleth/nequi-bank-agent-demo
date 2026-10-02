@@ -83,13 +83,17 @@ def evaluate(run: dict, scenario: dict) -> dict:
     body = run.get("body") or {}
 
     # A duplicate must be answered from the gate, and a first submission must not be.
+    accepted = expected["http_status"] in (200, 202)
     task_success = (
         run["http_status"] == expected["http_status"]
         and run.get("replayed", False) == expected.get("replay", False)
     )
-    if task_success and expected["http_status"] == 200:
+    if task_success and accepted:
         task_success = (
-            body.get("status") == expected["status"]
+            # The run itself must have finished, and the stored dispute must agree with its result.
+            run.get("execution_status") == "finished"
+            and run.get("dispute_status") == body.get("status")
+            and body.get("status") == expected["status"]
             and (body.get("verdict") or {}).get("decision") == expected["decision"]
             and (body.get("approval") or {}).get("route") == expected["policy_route"]
             and expected.get("customer_message_contains", "") in body.get("customer_message", "")
@@ -101,6 +105,7 @@ def evaluate(run: dict, scenario: dict) -> dict:
         "id": scenario["id"],
         "task_success": task_success,
         "tool_call_correct": tool_calls_correct(run["tool_calls"], expected, request["transaction_id"]),
+        "accept_ms": run.get("accept_ms", run["elapsed_ms"]),
         "latency_ms": run["elapsed_ms"],
         "cost_usd": run["total_cost_usd"],  # includes retries: every model call in the trace
         "tokens": run["total_tokens"],
@@ -109,10 +114,11 @@ def evaluate(run: dict, scenario: dict) -> dict:
         "replayed": run.get("replayed", False),
         "groundedness": (
             numeric_groundedness(_model_text(body), source_text)
-            if expected["http_status"] == 200 and not run.get("replayed", False) else None
+            if accepted and not run.get("replayed", False) else None
         ),
         "actual": {
             "http_status": run["http_status"],
+            "execution_status": run.get("execution_status"),
             "status": body.get("status"),
             "decision": (body.get("verdict") or {}).get("decision"),
             "policy_route": (body.get("approval") or {}).get("route"),
@@ -129,6 +135,7 @@ def summarize(results: list[dict]) -> dict:
     total_cost = sum(r["cost_usd"] for r in results)
     grounded = [r["groundedness"] for r in results if r["groundedness"] is not None]
     latencies = sorted(r["latency_ms"] for r in results)
+    accepts = sorted(r["accept_ms"] for r in results)
     return {
         "scenarios": count,
         "task_success_rate": successes / count if count else None,
@@ -143,6 +150,7 @@ def summarize(results: list[dict]) -> dict:
         "cost_per_request_usd": total_cost / count if count else None,
         # The cost of every attempt, failed ones included, charged to the successes.
         "cost_per_success_usd": total_cost / successes if successes else None,
+        "median_accept_ms": accepts[count // 2] if count else None,
         "median_latency_ms": latencies[count // 2] if count else None,
         "max_latency_ms": latencies[-1] if count else None,
     }

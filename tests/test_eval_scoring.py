@@ -28,6 +28,9 @@ def call(name: str, tx: str = TX, output: str = "") -> dict:
 def run(**overrides) -> dict:
     base = {
         "http_status": 200,
+        "execution_status": "finished",
+        "dispute_status": "refund_approved",
+        "accept_ms": 300,
         "elapsed_ms": 9000,
         "total_cost_usd": 0.019,
         "total_tokens": 5700,
@@ -163,3 +166,17 @@ def test_a_duplicate_must_be_a_replay_and_a_first_submission_must_not():
     assert evaluate(run(), duplicate)["task_success"] is False  # the models ran again for a duplicate
     assert evaluate(replayed, SCENARIO)["task_success"] is False  # a first submission answered from a stale store
     assert evaluate(replayed, duplicate)["cost_usd"] == 0
+
+
+def test_a_run_that_failed_is_not_a_success_even_with_a_polite_answer():
+    assert evaluate(run(execution_status="failed"), SCENARIO)["task_success"] is False
+
+
+def test_the_stored_dispute_must_agree_with_its_result():
+    assert evaluate(run(dispute_status="pending_human_approval"), SCENARIO)["task_success"] is False
+
+
+def test_accepted_with_202_is_scored_like_any_accepted_dispute():
+    scenario = SCENARIO | {"expected": SCENARIO["expected"] | {"http_status": 202}}
+    result = evaluate(run(http_status=202), scenario)
+    assert (result["task_success"], result["groundedness"], result["accept_ms"]) == (True, 1.0, 300)
