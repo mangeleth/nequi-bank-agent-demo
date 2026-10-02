@@ -555,3 +555,53 @@ curl -s localhost:8004/v1/disputes/<dispute_id> -H "Authorization: Bearer $TOKEN
 
 The synthetic customers and transactions are listed in
 [`services/core_systems/adapters/fixtures.py`](services/core_systems/adapters/fixtures.py).
+
+## How the services talk to each other
+
+Inside the cluster, a service is reached by its Kubernetes Service name (a ClusterIP), for example
+`http://core-systems`. Every API is a FastAPI app; the callers use `httpx`. But not every hop is a
+REST call: where work must survive a crash or be paced, it goes through a queue instead.
+
+**Direct calls (HTTP, request and response):**
+
+| From | To | Call | What travels with it |
+|---|---|---|---|
+| demo-ui | supervisor (intake API) | `POST /v1/disputes`, `GET /v1/disputes/{id}` | the customer's login token |
+| demo-ui | supervisor (intake API) | `/v1/reviews/...` (queue, decision, follow-ups, labels) | a reviewer token (`dispute-reviewer` role) |
+| supervisor | core-systems | `GET /v1/core-banking/transactions/{id}` (does the customer own it?) | `X-Customer-Id`, set by code |
+| triage-worker | fraud-agent | `POST /v1/fraud/assessments` | the worker's own 2-minute token for one transaction, and `traceparent` |
+| triage-worker | ledger-agent | `POST /v1/ledger/reconciliations` | the same |
+| triage-worker | core-systems | `GET` incident check, transaction, risk signals, refund history | `X-Customer-Id` |
+| fraud-agent | core-systems | `GET` the transaction and its risk signals (REST) | `X-Customer-Id` |
+| ledger-agent | core-systems | **MCP**: JSON-RPC over Streamable HTTP at `/mcp`, two allow-listed tools | `X-Customer-Id` |
+| refund-payer | core-systems | `POST /v1/core-banking/refunds` | `Idempotency-Key: dispute:<id>` |
+| judge | core-systems | `GET` the transaction, risk signals, and any refund (the evidence) | `X-Customer-Id` |
+
+**Through a queue (the sender does not wait; the message is only an ID):**
+
+| From | Queue | To | Why a queue |
+|---|---|---|---|
+| supervisor | Service Bus `disputes` | triage-worker | a dispute survives a worker that dies; bursts wait instead of overloading ([ADR-0018](docs/adr/0018-dispute-queue-and-worker.md)) |
+| triage-worker, or supervisor after a person approves | Service Bus `refunds` | refund-payer | payments at a fixed pace, and they can be paused ([ADR-0021](docs/adr/0021-refund-payer-and-refunds-queue.md)) |
+| triage-worker | Redis stream `judge-jobs` | judge | grading never slows down or blocks a dispute ([ADR-0026](docs/adr/0026-llm-judge.md)) |
+
+That is why `triage-worker`, `refund-payer`, and `judge` have **no Service**: nothing can call
+them. Their FastAPI app exposes only `/healthz` and `/readyz`, for Kubernetes.
+
+**Storage and Azure (their own protocols):**
+
+| From | To | Protocol |
+|---|---|---|
+| supervisor, triage-worker, refund-payer, judge | PostgreSQL `disputes` database | PostgreSQL wire protocol (`psycopg`) |
+| core-systems | PostgreSQL `ledger` database | PostgreSQL wire protocol |
+| supervisor, triage-worker, judge | Redis | Redis protocol (duplicate check, judge-jobs stream) |
+| triage-worker, both agents, judge | Azure OpenAI | HTTPS, Entra ID token (Workload Identity) |
+| supervisor, triage-worker, refund-payer | Service Bus | AMQP over TLS, Entra ID token |
+| triage-worker | Key Vault | HTTPS: asks Key Vault to sign its tokens; the key never leaves |
+| triage-worker, both agents, demo-ui | Langfuse Cloud | HTTPS: traces sent; the UI reads them back |
+
+**Security today, and in production.** Traffic inside the cluster is plain HTTP. What protects it:
+every agent verifies a signed token itself, the customer is always set by code (never by a model),
+and only `demo-ui` has a public address. In production: mutual TLS between services (a service
+mesh), Kubernetes network policies so each service can reach only what it calls, and private
+endpoints for the Azure services.
