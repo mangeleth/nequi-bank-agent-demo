@@ -123,6 +123,17 @@ Planned steps:
   expensive to run. Shown per run over time (`evals/results/*.json`), with time to accept and
   time to result next to them, and the fast-path disputes counted separately (0 model calls, $0).
 
+## Milestone 7.5: the demo on the internet (done, ADR-0024)
+
+- The demo UI gets a public address, open to anyone with no sign-in:
+  `http://nequi-disputes-demo.eastus2.cloudapp.azure.com` (`make ui-publish`; `make ui-unpublish`
+  removes it). Only the UI is published; every other service stays internal.
+- Model spend from visitors is bounded by the deduplication gate: at most one investigation per
+  customer and transfer between two `make demo-reset`s.
+- A Nequi-inspired look (palette and Manrope; no logo), labelled as an independent demo, and each
+  run's trace drawn inside the page from Langfuse (ADR-0025).
+- Later, if needed: HTTPS with a certificate.
+
 ## Milestone 8: the three-tier defensive barrier
 
 Resilience in a multi-agent system needs three layers. All three exist today; Milestone 8 runs

@@ -1,0 +1,31 @@
+---
+# The demo UI on the public internet (ADR-0024). Open to anyone, with no sign-in, by decision:
+# it shows synthetic data only, and the model spend it can cause is bounded by the deduplication
+# gate (one investigation per customer and transfer until `make demo-reset`).
+#
+# Only the UI is published. The intake API, the agents, the databases, and the queues keep their
+# ClusterIP Services and stay unreachable from outside the cluster.
+#
+# Kept apart from k8s/demo-ui/ on purpose: `make deploy SERVICE=demo-ui` never publishes it.
+# Publish with `make ui-publish`; remove with `make ui-unpublish`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-ui-public
+  namespace: disputes
+  labels:
+    app.kubernetes.io/name: demo-ui
+    app.kubernetes.io/part-of: dispute-triage
+  annotations:
+    # A stable name instead of a bare IP: http://<label>.<region>.cloudapp.azure.com
+    service.beta.kubernetes.io/azure-dns-label-name: ${DEMO_UI_DNS_LABEL}
+    # The Azure load balancer checks the UI's real health endpoint
+    service.beta.kubernetes.io/azure-load-balancer-health-probe-request-path: /_stcore/health
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: demo-ui
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

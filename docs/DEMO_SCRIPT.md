@@ -2,8 +2,9 @@
 
 The scenarios to show live, in order, with what to point at and what to say.
 
-Before starting: `make aks-start` (if stopped), `make demo-reset`, then `make ui` and open
-http://localhost:8501. Scenarios 1, 2, and 5 run in the **📱 Customer app** tab; scenario 3 runs
+Before starting: `make aks-start` (if stopped), `make demo-reset`, then open
+http://nequi-disputes-demo.eastus2.cloudapp.azure.com (`make ui-publish` if it is not published),
+or `make ui` and http://localhost:8501. Scenarios 1, 2, and 5 run in the **📱 Customer app** tab; scenario 3 runs
 the batch from the terminal, then the dispute in the UI; scenario 4 runs from the terminal. The
 **📊 Evaluation dashboard** tab answers "how do you know it works, and what does it cost?".
 

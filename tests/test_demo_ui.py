@@ -24,6 +24,15 @@ def test_every_demo_transaction_is_the_customers_and_claims_what_was_debited():
             assert tx.amount == str(row["debited_amount"]), tx.transaction_id
 
 
+def test_each_customers_transfers_display_differently():
+    """A selectbox tracks its choice by what it displays: equal labels once swapped TX-...0001 for
+    TX-...0008 without the viewer noticing."""
+    for user_id, transactions in logic.TRANSACTIONS.items():
+        shown = [t.display for t in transactions]
+        assert len(set(shown)) == len(shown), user_id
+        assert len({t.label for t in transactions}) == len(transactions), user_id
+
+
 def test_login_issues_a_token_the_intake_api_accepts_for_that_customer_only():
     identity = verify_token(logic.login("user-1002", LOGIN), SETTINGS)
     assert identity.user_id == "user-1002"
@@ -48,6 +57,7 @@ def test_progress_records_each_status_once_in_order():
     for status, at in [("received", 100.2), ("received", 100.5), ("investigating", 101.0), ("refund_paid", 109.9)]:
         progress.observe({"status": status}, at)
     assert progress.seen == [("received", 0.2), ("investigating", 1.0), ("refund_paid", 9.9)]
+    assert progress.lines() == ["📥 Recibida · 0.2 s", "🔎 En revisión · 1.0 s", "💸 Reembolso pagado · 9.9 s"]
 
 
 def _supervisor(specialists, script):
@@ -88,7 +98,7 @@ def test_the_app_follows_a_covered_dispute_to_paid_and_shows_the_fast_path():
     outcome = logic.read_outcome(view)
     assert submitted.status_code == 202
     assert view["status"] == "refund_paid" and progress.seen[-1][0] == "refund_paid"
-    assert outcome.path == "incident" and outcome.headline.startswith("⚡ Decided without a model")
+    assert outcome.path == "incident" and outcome.headline.startswith("⚡ Decidida sin un modelo")
     assert outcome.trace_url is None and outcome.payment["refund_id"].startswith("RF-")
     assert {check["name"] for check in outcome.checks} >= {"auto_refund_enabled", "under_amount_limit"}
 
@@ -135,7 +145,112 @@ def test_the_streamlit_page_renders_with_the_real_reports(monkeypatch):
     page = AppTest.from_file(str(Path(__file__).resolve().parent.parent / "services/demo_ui/app.py"), default_timeout=30).run()
 
     assert not page.exception
-    assert [tab.label for tab in page.tabs] == ["📱 Customer app", "📊 Evaluation dashboard", "🗺️ Demo script"]
+    assert [tab.label for tab in page.tabs] == ["📱 App del cliente", "📊 Tablero de evaluación", "🗺️ Guion de la demo"]
     metrics = {m.label: m.value for m in page.metric}
-    assert set(metrics) == {"Evaluated requests", "Successful requests", "Success rate", "Total cost", "Cost per success"}
-    assert metrics["Success rate"].endswith("%") and metrics["Total cost"].startswith("$")
+    assert set(metrics) == {"Solicitudes evaluadas", "Solicitudes exitosas", "Tasa de éxito", "Costo total", "Costo por éxito"}
+    assert metrics["Tasa de éxito"].endswith("%") and metrics["Costo total"].startswith("$")
+
+
+# --- The trace inside the demo (ADR-0025) ---------------------------------------------------------
+
+
+def _obs(id_, name, kind, start, end, parent=None, **extra):
+    return {"id": id_, "name": name, "type": kind, "parentObservationId": parent,
+            "startTime": f"2026-10-02T16:52:{start}Z", "endTime": f"2026-10-02T16:52:{end}Z", **extra}
+
+
+TRACE = [  # the shape of a real trace: graph nodes, an agent in another pod, LangChain internals
+    _obs("root", "dispute-triage", "CHAIN", "17.000", "22.000"),
+    _obs("sup", "supervisor", "CHAIN", "17.002", "18.000", "root"),
+    _obs("seq", "RunnableSequence", "CHAIN", "17.004", "17.999", "sup"),
+    _obs("g1", "AzureChatOpenAI", "GENERATION", "17.008", "17.900", "seq", model="gpt-4o-2024-11-20",
+         usageDetails={"total": 595}, totalCost=0.0021),
+    _obs("node", "ledger_agent", "CHAIN", "18.090", "20.000", "root"),
+    _obs("svc", "ledger-agent", "AGENT", "18.092", "19.990", "node"),
+    _obs("mw", "ModelCallLimitMiddleware.before_model", "CHAIN", "18.094", "18.095", "svc"),
+    _obs("g2", "AzureChatOpenAI", "GENERATION", "18.096", "19.000", "svc", model="gpt-4o-2024-11-20",
+         usageDetails={"total": 700}, totalCost=0.0025),
+    _obs("t1", "get_transaction", "TOOL", "19.099", "19.110", "svc", input='{"transaction_id": "TX-20261001000003"}',
+         output='{"settlement_status": "settled"}'),
+]
+
+
+def test_trace_view_shows_the_story_and_hides_langchain_internals():
+    view = logic.trace_view(TRACE)
+
+    assert [(r["depth"], r["label"]) for r in view.rows] == [
+        (0, "📨 Dispute triage (the whole run)"),
+        (1, "🧭 Supervisor decides the next step"),
+        (2, "🧠 Model call (gpt-4o-2024-11-20)"),  # its RunnableSequence parent is hidden, not counted
+        (1, "📒 Ask the Ledger Agent"),
+        (2, "📒 Ledger Agent service"),
+        (3, "🧠 Model call (gpt-4o-2024-11-20)"),
+        (3, "🔧 get_transaction(TX-20261001000003)"),
+    ]
+    assert view.hidden == 2
+    assert (view.model_calls, view.tool_calls, view.tokens) == (2, 1, 1295)
+    assert view.cost_usd == 0.0046 and view.duration_s == 5.0
+    assert view.rows[6]["start_ms"] == 2099 and view.rows[6]["output"] == '{"settlement_status": "settled"}'
+
+
+def test_trace_view_can_include_every_step_and_totals_do_not_change():
+    every = logic.trace_view(TRACE, include_internal=True)
+    assert len(every.rows) == len(TRACE) and every.hidden == 0
+    assert (every.model_calls, every.cost_usd) == (2, 0.0046)
+
+
+def test_trace_id_comes_from_the_trace_link():
+    assert logic.trace_id_from_url("https://us.cloud.langfuse.com/project/p1/traces/0787695") == "0787695"
+    assert logic.trace_id_from_url(None) is None
+
+
+def test_langfuse_keys_are_read_from_mounted_files(tmp_path, monkeypatch):
+    (tmp_path / "pk").write_text("pk-lf-demo\n")
+    (tmp_path / "sk").write_text("sk-lf-demo\n")
+    monkeypatch.setenv("LANGFUSE_BASE_URL", "https://us.cloud.langfuse.com")
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY_FILE", str(tmp_path / "pk"))
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY_FILE", str(tmp_path / "sk"))
+    assert logic.LangfuseReader.from_env() is not None
+
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY_FILE", str(tmp_path / "missing"))
+    assert logic.LangfuseReader.from_env() is None  # no keys: the UI only links to the trace
+
+
+def test_the_chosen_transfer_stays_chosen_across_reruns(monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setenv("EVAL_RESULTS_DIR", "evals/results")
+    page = AppTest.from_file(str(Path(__file__).resolve().parent.parent / "services/demo_ui/app.py"),
+                             default_timeout=30).run()
+    for tx_id, story in (("TX-20261001000001", "Escenario 1"), ("TX-20261001000008", "Escenario 5"),
+                         ("TX-20261001000001", "Escenario 1")):
+        page.selectbox(key="tx-A-user-1001").set_value(tx_id).run()
+        page.run()  # another rerun, as any click causes
+        assert page.selectbox(key="tx-A-user-1001").value == tx_id
+        assert any(c.value.startswith(story) for c in page.caption)
+
+
+def test_a_trace_still_arriving_is_detected_from_the_disputes_steps():
+    steps = ["supervisor -> ledger_agent: evidence first", "ledger_agent: ok",
+             "supervisor -> fraud_agent: then risk", "fraud_agent: ok", "verdict: refund_recommended"]
+    only_ledger = TRACE  # has the ledger-agent service, not the fraud-agent one
+    assert logic.missing_from_trace(only_ledger, steps) == ["fraud-agent"]
+    complete = TRACE + [_obs("svc2", "fraud-agent", "AGENT", "20.100", "21.000", "root")]
+    assert logic.missing_from_trace(complete, steps) == []
+    assert logic.missing_from_trace([], ["incident: covered", "verdict: no_action"]) == []
+
+
+def test_the_scenario_table_says_what_decided_each_one(tmp_path):
+    _report(tmp_path, "run", [
+        {**_result(True, 0.02), "id": "agents"},
+        {**_result(True, 0.0, "INC-20261001-01"), "id": "incident"},
+        {"id": "duplicate", "task_success": True, "cost_usd": 0.0, "latency_ms": 300,
+         "actual": {"model_calls": 0, "status": "refund_paid"}},
+        {"id": "refused", "task_success": True, "cost_usd": 0.0, "latency_ms": 300,
+         "actual": {"model_calls": 0, "status": None}},
+    ])
+    paths = {row["escenario"]: (row["camino"], row["resultado"]) for row in logic.latest_scenarios(tmp_path)}
+    assert paths == {"agents": ("🤖 agentes", "refund_paid"), "incident": ("⚡ incidente", "refund_paid"),
+                     "duplicate": ("— sin revisión", "refund_paid"), "refused": ("— sin revisión", "—")}
