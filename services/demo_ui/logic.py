@@ -39,32 +39,32 @@ class DemoTransaction:
 
 TRANSACTIONS: dict[str, list[DemoTransaction]] = {
     "user-1001": [
-        DemoTransaction("TX-20261001000001", "50000.00", "50.000 to ****4821 at 09:00, failed",
-                        "Scenario 1: three agents investigate; approved and paid"),
-        DemoTransaction("TX-20261001000002", "450000.00", "450.000 to ****7710 at 07:00, failed",
-                        "Over the automatic limit: a person decides"),
-        DemoTransaction("TX-20261001000003", "80000.00", "80.000 to ****4821 at 06:00, completed",
-                        "Settled normally: no refund is due"),
-        DemoTransaction("TX-20261001000008", "50000.00", "50.000 to ****4821 at 08:00, failed",
-                        "Scenario 5: try a prompt injection in the description"),
+        DemoTransaction("TX-20261001000001", "50000.00", "50.000 a ****4821 a las 09:00, fallida",
+                        "Escenario 1: tres agentes investigan; se aprueba y se paga"),
+        DemoTransaction("TX-20261001000002", "450000.00", "450.000 a ****7710 a las 07:00, fallida",
+                        "Supera el límite automático: decide una persona"),
+        DemoTransaction("TX-20261001000003", "80000.00", "80.000 a ****4821 a las 06:00, completada",
+                        "Se completó con normalidad: no corresponde reembolso"),
+        DemoTransaction("TX-20261001000008", "50000.00", "50.000 a ****4821 a las 08:00, fallida",
+                        "Escenario 5: prueba una inyección de instrucciones en la descripción"),
     ],
     "user-1002": [
-        DemoTransaction("TX-20261001000009", "35000.00", "35.000 to Banco Andino at 09:10, failed",
-                        "Scenario 2: covered by a confirmed incident; no model is used"),
-        DemoTransaction("TX-20261001000011", "20000.00", "20.000 to Banco Andino at 10:30, failed",
-                        "Scenario 2, side by side: the same failure after the window; the agents investigate"),
-        DemoTransaction("TX-20261001000004", "30000.00", "30.000 to ****0093 at 11:00, failed",
-                        "High fraud risk: the security team reviews it"),
-        DemoTransaction("TX-20261001000005", "20000.00", "20.000 to ****5512 at 12:00, in progress",
-                        "Still in flight: no decision yet"),
+        DemoTransaction("TX-20261001000009", "35000.00", "35.000 a Banco Andino a las 09:10, fallida",
+                        "Escenario 2: cubierta por un incidente confirmado; no se usa ningún modelo"),
+        DemoTransaction("TX-20261001000011", "20000.00", "20.000 a Banco Andino a las 10:30, fallida",
+                        "Escenario 2, lado a lado: la misma falla después de la ventana; investigan los agentes"),
+        DemoTransaction("TX-20261001000004", "30000.00", "30.000 a ****0093 a las 11:00, fallida",
+                        "Riesgo de fraude alto: la revisa el equipo de seguridad"),
+        DemoTransaction("TX-20261001000005", "20000.00", "20.000 a ****5512 a las 12:00, en curso",
+                        "Todavía en curso: aún no hay decisión"),
     ],
     "user-1003": [
-        DemoTransaction("TX-20261001000010", "60000.00", "60.000 to Banco Andino at 09:25, failed",
-                        "Scenario 3: after the batch refund it is already returned"),
-        DemoTransaction("TX-20261001000007", "25000.00", "25.000 to ****3307 at 10:00, failed",
-                        "Already 3 automatic refunds this month: a person decides"),
-        DemoTransaction("TX-20261001000006", "40000.00", "40.000 to ****3307 two days ago, reversed",
-                        "Already refunded: nothing is due"),
+        DemoTransaction("TX-20261001000010", "60000.00", "60.000 a Banco Andino a las 09:25, fallida",
+                        "Escenario 3: después del reembolso masivo ya está devuelta"),
+        DemoTransaction("TX-20261001000007", "25000.00", "25.000 a ****3307 a las 10:00, fallida",
+                        "Ya tiene 3 reembolsos automáticos este mes: decide una persona"),
+        DemoTransaction("TX-20261001000006", "40000.00", "40.000 a ****3307 hace dos días, reversada",
+                        "Ya fue reembolsada: no se debe nada"),
     ],
 }
 
@@ -131,13 +131,13 @@ def is_settled(view: dict) -> bool:
 
 
 STATUS_LABELS = {
-    "received": "📥 Received",
-    "investigating": "🔎 Investigating",
-    "refund_approved": "✅ Refund approved (being paid)",
-    "refund_paid": "💸 Refund paid",
-    "pending_human_approval": "👤 With a person",
-    "closed_no_refund": "📁 Closed, no refund due",
-    "rejected": "⛔ Refund rejected",
+    "received": "📥 Recibida",
+    "investigating": "🔎 En revisión",
+    "refund_approved": "✅ Reembolso aprobado (pagándose)",
+    "refund_paid": "💸 Reembolso pagado",
+    "pending_human_approval": "👤 La revisa una persona",
+    "closed_no_refund": "📁 Cerrada, no corresponde reembolso",
+    "rejected": "⛔ Reembolso rechazado",
 }
 
 
@@ -178,17 +178,17 @@ def read_outcome(view: dict) -> Outcome:
     steps = result.get("steps") or []
     if incident:
         path = "incident"
-        headline = "⚡ Decided without a model: 0 model calls, $0"
-        detail = (f"Covered by confirmed incident **{incident['incident_id']}** "
-                  f"({incident['title']}), confirmed by {incident['confirmed_by']}. Code read the ledger and the "
-                  "risk engine and applied the same refund policy as every dispute.")
+        headline = "⚡ Decidida sin un modelo: 0 llamadas al modelo, $0"
+        detail = (f"Cubierta por el incidente confirmado **{incident['incident_id']}** "
+                  f"({incident['title']}), confirmado por {incident['confirmed_by']}. El código leyó el libro "
+                  "contable y el motor de riesgo y aplicó la misma política de reembolsos que a toda disputa.")
     elif any(step.startswith(("ledger_agent", "fraud_agent")) for step in steps):
         path = "agents"
-        headline = "🤖 Investigated by the agents"
-        detail = "The supervisor asked the Ledger and Fraud agents; code then applied the refund policy."
+        headline = "🤖 Investigada por los agentes"
+        detail = "El supervisor consultó a los agentes de libro contable y de fraude; luego el código aplicó la política de reembolsos."
     else:
         path = "none"
-        headline = "No investigation ran"
+        headline = "No se hizo ninguna investigación"
         detail = result.get("escalation_reason") or ""
     return Outcome(path=path, headline=headline, detail=detail, checks=approval.get("checks") or [],
                    steps=steps, payment=result.get("payment"), trace_url=result.get("trace_url"))
@@ -228,16 +228,25 @@ def load_runs(results_dir: Path) -> list[dict]:
 
 
 def latest_scenarios(results_dir: Path) -> list[dict]:
-    """The latest run's scenarios, for a table."""
+    """The latest run's scenarios, for a table. The path says what decided it: a confirmed
+    incident, the agents, or nothing (a duplicate replayed from the gate, a request refused)."""
     reports = sorted(results_dir.glob("*.json"))
     if not reports:
         return []
-    results = json.loads(reports[-1].read_text())["results"]
-    return [{"scenario": r["id"], "success": "yes" if r.get("task_success") else "NO",
-             "path": "⚡ incident" if (r.get("actual") or {}).get("incident_id") else "🤖 agents",
-             "model calls": (r.get("actual") or {}).get("model_calls"),
-             "result (s)": round(r["latency_ms"] / 1000, 1), "cost ($)": round(r.get("cost_usd") or 0, 4),
-             "outcome": (r.get("actual") or {}).get("status")} for r in results]
+    rows = []
+    for r in json.loads(reports[-1].read_text())["results"]:
+        actual = r.get("actual") or {}
+        model_calls = actual.get("model_calls")
+        if actual.get("incident_id"):
+            path = "⚡ incidente"
+        elif model_calls or (model_calls is None and r.get("cost_usd")):
+            path = "🤖 agentes"
+        else:
+            path = "— sin revisión"
+        rows.append({"escenario": r["id"], "éxito": "sí" if r.get("task_success") else "NO", "camino": path,
+                     "llamadas al modelo": model_calls, "resultado (s)": round(r["latency_ms"] / 1000, 1),
+                     "costo ($)": round(r.get("cost_usd") or 0, 4), "resultado": actual.get("status") or "—"})
+    return rows
 
 
 # --- The trace, shown inside the demo (read from Langfuse) ---------------------------------------

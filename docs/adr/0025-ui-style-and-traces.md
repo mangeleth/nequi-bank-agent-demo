@@ -14,9 +14,13 @@ identity could be mistaken for Nequi itself, or for a phishing page.
   `#DA0081` (accent), dark purple `#200020` (text, header), lilac `#ECE7F5` (panels), the
   open-source Manrope font, and rounded corners (`.streamlit/config.toml`). **No logo, no
   artwork, no product names**, and the page is titled "AI dispute triage demo".
-- **Labelled as independent, on every view:** "Independent interview demo, not a Nequi product
-  and not affiliated with Nequi. Synthetic customers and data only; never enter real personal or
-  banking details." The page never asks for credentials.
+- **The interface is in Spanish**, for Nequi's customers: labels, buttons, statuses, transfer
+  descriptions, badges, the dashboard, the disclaimer. What the system produced is shown as it
+  is (in English): the customer message, the steps taken, the trace's step names, and the models'
+  inputs and outputs. The page says so next to the customer message.
+- **Labelled as independent, on every view:** "Demo independiente para una entrevista: no es un producto de Nequi
+  ni está afiliada a Nequi. Solo clientes y datos sintéticos; nunca ingreses datos personales o
+  bancarios reales." The page never asks for credentials.
 - **The trace inside the page.** For an agent investigation, the UI reads the run's observations
   from Langfuse's public API and draws them: the meaningful steps in time order, indented under
   their parents (the run, the supervisor's decisions, each agent, including the agent services in

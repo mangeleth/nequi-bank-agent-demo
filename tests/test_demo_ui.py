@@ -57,6 +57,7 @@ def test_progress_records_each_status_once_in_order():
     for status, at in [("received", 100.2), ("received", 100.5), ("investigating", 101.0), ("refund_paid", 109.9)]:
         progress.observe({"status": status}, at)
     assert progress.seen == [("received", 0.2), ("investigating", 1.0), ("refund_paid", 9.9)]
+    assert progress.lines() == ["📥 Recibida · 0.2 s", "🔎 En revisión · 1.0 s", "💸 Reembolso pagado · 9.9 s"]
 
 
 def _supervisor(specialists, script):
@@ -97,7 +98,7 @@ def test_the_app_follows_a_covered_dispute_to_paid_and_shows_the_fast_path():
     outcome = logic.read_outcome(view)
     assert submitted.status_code == 202
     assert view["status"] == "refund_paid" and progress.seen[-1][0] == "refund_paid"
-    assert outcome.path == "incident" and outcome.headline.startswith("⚡ Decided without a model")
+    assert outcome.path == "incident" and outcome.headline.startswith("⚡ Decidida sin un modelo")
     assert outcome.trace_url is None and outcome.payment["refund_id"].startswith("RF-")
     assert {check["name"] for check in outcome.checks} >= {"auto_refund_enabled", "under_amount_limit"}
 
@@ -144,10 +145,10 @@ def test_the_streamlit_page_renders_with_the_real_reports(monkeypatch):
     page = AppTest.from_file(str(Path(__file__).resolve().parent.parent / "services/demo_ui/app.py"), default_timeout=30).run()
 
     assert not page.exception
-    assert [tab.label for tab in page.tabs] == ["📱 Customer app", "📊 Evaluation dashboard", "🗺️ Demo script"]
+    assert [tab.label for tab in page.tabs] == ["📱 App del cliente", "📊 Tablero de evaluación", "🗺️ Guion de la demo"]
     metrics = {m.label: m.value for m in page.metric}
-    assert set(metrics) == {"Evaluated requests", "Successful requests", "Success rate", "Total cost", "Cost per success"}
-    assert metrics["Success rate"].endswith("%") and metrics["Total cost"].startswith("$")
+    assert set(metrics) == {"Solicitudes evaluadas", "Solicitudes exitosas", "Tasa de éxito", "Costo total", "Costo por éxito"}
+    assert metrics["Tasa de éxito"].endswith("%") and metrics["Costo total"].startswith("$")
 
 
 # --- The trace inside the demo (ADR-0025) ---------------------------------------------------------
@@ -223,8 +224,8 @@ def test_the_chosen_transfer_stays_chosen_across_reruns(monkeypatch):
     monkeypatch.setenv("EVAL_RESULTS_DIR", "evals/results")
     page = AppTest.from_file(str(Path(__file__).resolve().parent.parent / "services/demo_ui/app.py"),
                              default_timeout=30).run()
-    for tx_id, story in (("TX-20261001000001", "Scenario 1"), ("TX-20261001000008", "Scenario 5"),
-                         ("TX-20261001000001", "Scenario 1")):
+    for tx_id, story in (("TX-20261001000001", "Escenario 1"), ("TX-20261001000008", "Escenario 5"),
+                         ("TX-20261001000001", "Escenario 1")):
         page.selectbox(key="tx-A-user-1001").set_value(tx_id).run()
         page.run()  # another rerun, as any click causes
         assert page.selectbox(key="tx-A-user-1001").value == tx_id
@@ -239,3 +240,17 @@ def test_a_trace_still_arriving_is_detected_from_the_disputes_steps():
     complete = TRACE + [_obs("svc2", "fraud-agent", "AGENT", "20.100", "21.000", "root")]
     assert logic.missing_from_trace(complete, steps) == []
     assert logic.missing_from_trace([], ["incident: covered", "verdict: no_action"]) == []
+
+
+def test_the_scenario_table_says_what_decided_each_one(tmp_path):
+    _report(tmp_path, "run", [
+        {**_result(True, 0.02), "id": "agents"},
+        {**_result(True, 0.0, "INC-20261001-01"), "id": "incident"},
+        {"id": "duplicate", "task_success": True, "cost_usd": 0.0, "latency_ms": 300,
+         "actual": {"model_calls": 0, "status": "refund_paid"}},
+        {"id": "refused", "task_success": True, "cost_usd": 0.0, "latency_ms": 300,
+         "actual": {"model_calls": 0, "status": None}},
+    ])
+    paths = {row["escenario"]: (row["camino"], row["resultado"]) for row in logic.latest_scenarios(tmp_path)}
+    assert paths == {"agents": ("🤖 agentes", "refund_paid"), "incident": ("⚡ incidente", "refund_paid"),
+                     "duplicate": ("— sin revisión", "refund_paid"), "refused": ("— sin revisión", "—")}
