@@ -60,53 +60,69 @@ Limits are configuration (`AUTO_REFUND_*` env vars), with a kill switch `AUTO_RE
 
 ```mermaid
 flowchart LR
-    app["📱 Customer app<br/>JWT login"]
+    app["📱 Customer app"]
 
     subgraph aks["AKS cluster · namespace disputes"]
         direction LR
-        sup["<b>supervisor</b><br/>safety gate + LangGraph<br/>refund policy"]
-        redis[("<b>redis</b><br/>dispute keys<br/>(fast path)")]
-        pg[("<b>postgres</b><br/>dispute records<br/>statuses, audit trail")]
-        fraud["<b>fraud-agent</b><br/>LangChain agent"]
-        ledger["<b>ledger-agent</b><br/>LangChain agent<br/>MCP client"]
-        core["<b>core-systems</b><br/>Core Banking + Risk Engine<br/>REST and MCP"]
+        sup["<b>supervisor</b><br/>intake API + safety gate<br/><i>no model access</i>"]
+        redis[("<b>redis</b><br/>duplicate check")]
+        pg[("<b>postgres</b><br/>dispute records")]
+        worker["<b>triage-worker</b><br/>supervisor graph<br/>+ refund policy"]
+        ledger["<b>ledger-agent</b>"]
+        fraud["<b>fraud-agent</b>"]
+        core["<b>core-systems</b><br/>Core Banking<br/>+ Risk Engine"]
     end
 
-    aoai["Azure OpenAI<br/>gpt-4o"]
-    kv["Key Vault<br/>Langfuse keys, database password,<br/>token signing key"]
-    lf["Langfuse Cloud<br/>traces, tokens, cost"]
-    acr["Container Registry<br/>images by git SHA"]
-    planned["Planned in M6<br/>dispute queue and worker · refund execution<br/>known-incident registry"]
+    sb["<b>Service Bus</b><br/>dispute queue"]
+    aoai["<b>Azure OpenAI</b><br/>gpt-4o"]
 
-    app -- "POST /v1/disputes (202)<br/>GET /v1/disputes/id" --> sup
-    sup <-- "claim key<br/>sha256(user, transaction)" --> redis
-    sup <-- "store, update status" --> pg
-    sup -- "its own 2-minute token<br/>+ traceparent" --> fraud
-    sup -- "its own 2-minute token<br/>+ traceparent" --> ledger
-    sup -. "sign (key never leaves)" .-> kv
-    fraud -- "REST" --> core
+    app -- "1 submit<br/>(202), then<br/>check status" --> sup
+    sup -- "2 duplicate?" --> redis
+    sup -- "3 store" --> pg
+    sup -- "4 send ID" --> sb
+    sb -- "5 deliver" --> worker
+    worker -- "6 ask" --> ledger
+    worker -- "6 ask" --> fraud
     ledger -- "MCP" --> core
-    sup -- "ownership, refund history" --> core
-
-    sup & fraud & ledger -. "Workload Identity" .-> aoai
-    sup & fraud & ledger -. "traces" .-> lf
-    kv -. "mounted as files (CSI)" .-> sup & fraud & ledger & pg
-    acr -. "image pull" .-> aks
-    sup -.- planned
+    fraud -- "REST" --> core
+    worker -- "7 save result" --> pg
+    worker -.-> aoai
+    ledger -.-> aoai
+    fraud -.-> aoai
 
     classDef llm fill:#fff4e5,stroke:#e69500,color:#222
     classDef det fill:#e8f4ff,stroke:#2b7bd6,color:#222
     classDef ext fill:#f4f4f4,stroke:#888,color:#222
-    classDef plan fill:#ffffff,stroke:#aaa,stroke-dasharray: 5 5,color:#666
-    class sup,fraud,ledger llm
-    class core,redis,pg det
-    class app,aoai,kv,lf,acr ext
-    class planned plan
+    class worker,fraud,ledger llm
+    class sup,core,redis,pg det
+    class app,aoai,sb ext
 ```
 
-🟧 Orange = services that call a model · 🟦 Blue = deterministic services · dashed = planned.
-Every service runs as two pods on separate nodes (Redis as one), non-root, with a read-only
-filesystem. Services log in to Azure with Workload Identity; there are no stored Azure keys.
+🟧 Orange = services that call a model · 🟦 Blue = deterministic services · dotted = model calls.
+
+The path of one dispute:
+
+1. The customer submits it and gets `202 Accepted` in about 0.3 seconds; the app then checks its status.
+2. Redis answers "is this a duplicate?" (one key per customer and transaction).
+3. PostgreSQL stores the dispute; its unique key is the guarantee behind step 2.
+4. The supervisor puts the dispute's ID on the queue. That is all it is allowed to do with it.
+5. The queue delivers the ID to a worker. If that worker dies, the queue delivers it to another.
+6. The worker runs the supervisor graph: it asks the Ledger Agent and the Fraud Agent, which read Core Systems.
+7. The worker saves the result on the dispute, where the customer's app reads it.
+
+Supporting services, not drawn above:
+
+| Service | Used by | For |
+|---|---|---|
+| **Key Vault** | supervisor, triage-worker, both agents, postgres | Secrets mounted as files (database password, Langfuse keys), and the key that signs the worker's own tokens, which never leaves Key Vault |
+| **Langfuse Cloud** | triage-worker, both agents | One trace per dispute: decisions, tool calls, tokens, cost |
+| **Container Registry** | the cluster | Images tagged with the git commit |
+| **Entra ID (Workload Identity)** | every pod that calls Azure | Login to Azure OpenAI, Key Vault, and Service Bus with no stored Azure keys |
+
+Planned in Milestone 6: refund execution in Core Systems, and a known-incident registry.
+
+Every service runs as two pods on separate nodes (Redis and PostgreSQL as one), non-root, with a
+read-only filesystem.
 
 A dispute passes the **safety gate** first: one key per customer and transaction, so ten taps on
 "Dispute" create one dispute and run one triage ([ADR-0015](docs/adr/0015-deduplication-gate.md)).
@@ -120,6 +136,12 @@ is a stored record with two separate statuses ([ADR-0016](docs/adr/0016-dispute-
 | Business status | Where does the customer's dispute stand? | received, investigating, pending human approval, refund approved, refund paid, closed without refund, rejected |
 
 There is no "resolved": an approved refund is `refund_approved` until the ledger confirms payment.
+
+Accepted disputes wait in a queue and a separate worker runs them
+([ADR-0018](docs/adr/0018-dispute-queue-and-worker.md)). The intake API, the only part a customer
+can reach, may add to the queue and nothing else: it has no model access and cannot sign tokens.
+If a worker dies mid-run, the queue hands the dispute to another; after two failed deliveries it
+goes to a person.
 
 ## The supervisor graph
 
@@ -258,14 +280,14 @@ The unit tests script the model; this measures it. `make eval-cluster` sends ten
 the system deployed on AKS and scores each run from its Langfuse trace
 ([ADR-0014](docs/adr/0014-evaluation-against-the-real-model.md)).
 
-| Metric | Latest run (commit `31a272a`, gpt-4o 2024-11-20) |
+| Metric | Latest run (commit `8c949d0`, gpt-4o 2024-11-20) |
 |---|---|
 | Task success (expected status, decision, policy route, and customer message) | 10 of 10 |
 | Tool calls correct (required calls made, nothing else looked up) | 100% |
 | Numeric groundedness (numbers the models wrote appear in the tool results) | 100% |
 | Agent calls that were retries | 0 |
-| Total spending for ten attempts | $0.1297 |
-| Cost per success | $0.0130 |
+| Total spending for ten attempts | $0.1294 |
+| Cost per success | $0.0129 |
 | Time to accept a dispute (the `202`), median | None |
 | Time to result, median / max | None |
 
@@ -280,7 +302,7 @@ make test                 # unit tests (no network, the LLM is scripted)
 make run-core             # terminal 1: Core Banking + Risk Engine on :8001
 make run-fraud            # terminal 2: Fraud Agent on :8002 (needs `az login` for Azure OpenAI)
 make run-ledger           # terminal 3: Ledger Agent on :8003 (talks to Core Banking over MCP)
-make run-supervisor       # terminal 4: Supervisor on :8004 (reads Langfuse keys from Key Vault)
+make run-supervisor       # terminal 4: Supervisor on :8004 (intake API and, locally, the worker too)
 
 # terminal 5: log in as a synthetic customer and dispute a transaction
 TOKEN=$(make demo-token USER_ID=user-1001)

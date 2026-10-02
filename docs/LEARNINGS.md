@@ -163,6 +163,22 @@ workload last. The stuck pod was replaced.
 Order matters in a deploy, and a rolling update that keeps the old version serving turns a bad
 release into a non-event.
 
+## 10. A scripted edit cut the name off a Kubernetes manifest (Milestone 6)
+
+**What happened.** A script that rewrote the supervisor's ConfigMap searched for the text
+`data:` to find where the settings begin. It matched the end of `metadata:` first and replaced
+everything after it, removing the ConfigMap's name and labels.
+
+**What caught it.** Kubernetes refused the file ("resource name may not be empty"), so nothing
+was applied and the running pods were untouched. The worker had already been deployed in the
+right order, so the system kept working throughout.
+
+**What changed.** The file was rewritten, and `make release` now runs `make validate` first:
+every manifest is rendered and checked with a client-side dry run before anything is built.
+
+**The lesson.** Validate generated or edited configuration before it reaches the deploy step,
+and treat "the cluster rejected it" as a late safety net, not the check.
+
 # Part 2: design principles (study notes)
 
 ## A. Know when not to use an agent: the known-incident fast path
