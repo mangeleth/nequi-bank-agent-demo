@@ -36,6 +36,10 @@ person who reviews the dispute.
   judge's reasons and what the customer was told. The dispute keeps its status and its money;
   the human agents decide what to do, and record a note when it is handled. The judge's false
   alarms (about 6% on the calibration set) cost a person's time, never a customer's money.
+- **Customer service's check is internal validation.** It is recorded (the follow-up queue and the
+  audit trail, both visible only to reviewers) but never shown to the customer: their outcome
+  stays as it was (for example "approved" or "paid", with the reviewer who approved it), and the
+  agent who re-checked it does not appear. A test compares the customer's view before and after.
 - The judge is the same model family as the candidates (gpt-4o, temperature 0). Same-family judges
   can share blind spots (see the production delta).
 

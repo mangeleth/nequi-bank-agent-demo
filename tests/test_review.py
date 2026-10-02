@@ -159,3 +159,29 @@ def test_customer_service_sees_and_resolves_what_the_judge_flagged():
     assert customer.status_code == 401  # customer service is reviewers only
     assert done.status_code == 200 and done.json()["resolved_by"] == "ops-ana"
     assert again.status_code == 409 and after == []
+
+
+def test_a_customer_service_check_is_recorded_internally_and_invisible_to_the_customer():
+    """The judge's follow-up is validation only: the system records it (follow-up queue, audit
+    trail), but the customer still sees their outcome as it was, and never the agent who checked."""
+    with Bank() as bank:
+        dispute_id = bank.dispute_waiting_for_a_person()
+        assert bank.decide(dispute_id, "approve").status_code == 200  # ops-ana approves: shown to the customer
+        before = bank.wait(dispute_id, lambda v: v["status"] == "refund_paid")
+
+        import asyncio as _asyncio
+        from uuid import UUID as _UUID
+
+        _asyncio.run(bank.app.state.store.flag_follow_up(_UUID(dispute_id), "clarity: code-like text"))
+        bank.http.post(f"/v1/reviews/follow-ups/{dispute_id}/resolve", json={"note": "explanation checked, fine"},
+                       headers=reviewer_headers(sub="ops-luis"))
+        after = bank.http.get(f"{URL}/{dispute_id}", headers=bearer("user-1001")).json()
+        internal = bank.http.get(f"/v1/reviews/disputes/{dispute_id}", headers=reviewer_headers()).json()
+
+    assert after == before  # the customer's view is exactly as it was: still paid
+    shown = str(after)
+    assert "ops-luis" not in shown and "customer service" not in shown and "clarity" not in shown
+    assert after["result"]["review"]["reviewer_id"] == "ops-ana"  # the approval is still shown
+    notes = [e["note"] for e in internal["events"]]  # the system knows, in the audit trail
+    assert "sent to customer service: clarity: code-like text" in notes
+    assert "customer service follow-up done by ops-luis: explanation checked, fine" in notes
