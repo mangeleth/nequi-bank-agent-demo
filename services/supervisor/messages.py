@@ -20,6 +20,10 @@ from shared.schemas import (
 
 NEEDS_PERSON = "We couldn't complete the review automatically, so the case is marked for review by a person."
 
+# Before there is a result. Each is true only while the dispute is in that status.
+RECEIVED = "We've received your dispute."
+INVESTIGATING = "We're checking the records for this transfer."
+
 
 def _records(ledger: LedgerReconciliation) -> str:
     """What the ledger shows, in the customer's terms."""

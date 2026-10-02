@@ -1,9 +1,11 @@
 """Idempotency and deduplication at the gate (ADR-0015).
 
 A frustrated customer taps "Dispute" several times. Every tap produces the same key,
-sha256(user_id, transaction_id). The first request claims the key and runs; a duplicate never
-reaches a model: it gets the stored result if the first has finished, or "already being
-processed" if it has not.
+sha256(user_id, transaction_id). The first request claims the key and creates the dispute; a
+duplicate never reaches a model: it is pointed to the dispute that already exists.
+
+This is the fast path. The guarantee is the unique constraint in PostgreSQL (store.py): if Redis
+forgets a key, the database still refuses a second dispute.
 
 The store must be shared by every supervisor replica, so the cluster uses Redis:
     SET key in_progress NX EX <lock seconds>     one atomic step: claim it only if nobody has
@@ -28,12 +30,13 @@ class GateUnavailable(Exception):
 class Claim:
     """Outcome of trying to claim a dispute key."""
 
-    claimed: bool  # True: this request is the first and must run the triage
-    result: str | None = None  # the stored result (JSON) when an earlier request already finished
+    claimed: bool  # True: this request is the first and must create the dispute
+    dispute_id: str | None = None  # the dispute that already holds this key
 
     @property
     def in_progress(self) -> bool:
-        return not self.claimed and self.result is None
+        """Another request holds the key and has not finished creating the dispute yet."""
+        return not self.claimed and self.dispute_id is None
 
 
 def dispute_key(user_id: str, transaction_id: str) -> str:
@@ -49,7 +52,7 @@ def dispute_key(user_id: str, transaction_id: str) -> str:
 @dataclass(frozen=True)
 class GateSettings:
     lock_seconds: int = 120  # how long a running triage holds the key; a crashed run frees it after this
-    result_seconds: int = 86_400  # how long a finished result answers duplicates (24 hours)
+    result_seconds: int = 86_400  # how long the key points to its dispute (24 hours)
 
     @classmethod
     def from_env(cls) -> "GateSettings":
@@ -63,8 +66,8 @@ class GateSettings:
 class DisputeGate(Protocol):
     async def claim(self, key: str) -> Claim: ...
 
-    async def complete(self, key: str, result: str) -> None:
-        """Store the finished result so later duplicates receive it."""
+    async def complete(self, key: str, dispute_id: str) -> None:
+        """Remember which dispute holds the key, so later duplicates are pointed to it."""
 
     async def release(self, key: str) -> None:
         """Give the key back without a result (the request was refused or could not start)."""
@@ -90,11 +93,11 @@ class InMemoryGate:
             if current is None:
                 self._entries[key] = (IN_PROGRESS, time.monotonic() + self._settings.lock_seconds)
                 return Claim(claimed=True)
-            return Claim(claimed=False, result=None if current == IN_PROGRESS else current)
+            return Claim(claimed=False, dispute_id=None if current == IN_PROGRESS else current)
 
-    async def complete(self, key: str, result: str) -> None:
+    async def complete(self, key: str, dispute_id: str) -> None:
         async with self._lock:
-            self._entries[key] = (result, time.monotonic() + self._settings.result_seconds)
+            self._entries[key] = (dispute_id, time.monotonic() + self._settings.result_seconds)
 
     async def release(self, key: str) -> None:
         async with self._lock:
@@ -123,13 +126,13 @@ class RedisGate:
             current = await self._redis.get(key)
         except RedisError as exc:
             raise GateUnavailable(type(exc).__name__) from exc
-        return Claim(claimed=False, result=None if current in (None, IN_PROGRESS) else current)
+        return Claim(claimed=False, dispute_id=None if current in (None, IN_PROGRESS) else current)
 
-    async def complete(self, key: str, result: str) -> None:
+    async def complete(self, key: str, dispute_id: str) -> None:
         from redis.exceptions import RedisError
 
         try:
-            await self._redis.set(key, result, ex=self._settings.result_seconds)
+            await self._redis.set(key, dispute_id, ex=self._settings.result_seconds)
         except RedisError as exc:
             raise GateUnavailable(type(exc).__name__) from exc
 

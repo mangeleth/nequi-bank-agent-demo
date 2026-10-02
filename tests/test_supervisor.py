@@ -3,14 +3,18 @@ set up a situation (a looping model, a failing agent, an inflated refund) and ch
 graph's deterministic controls decide the outcome.
 """
 
+import json
+import time
 from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
 
 from services.supervisor.clients import SpecialistUnavailable
+from services.supervisor.dedup import InMemoryGate
 from services.supervisor.graph import MAX_CALLS_PER_AGENT, MAX_SUPERVISOR_TURNS, breaker
 from services.supervisor.main import create_app
+from services.supervisor.store import InMemoryDisputeStore
 from shared.refund_policy import CustomerRefundHistory, RefundPolicyConfig
 from shared.schemas import FraudAssessment, LedgerReconciliation
 from shared.tracing import Tracing
@@ -19,7 +23,7 @@ from tests.fakes import tool_call as call
 from tests.jwt_helpers import SETTINGS, bearer
 
 TX = "TX-20261001000001"
-URL = "/v1/disputes/triage"
+URL = "/v1/disputes"
 DISPUTE = {"transaction_id": TX, "reason": "failed_transfer", "claimed_amount": "50000.00",
            "description": "I sent money and it never arrived"}
 
@@ -75,15 +79,45 @@ def verdict(decision="refund_recommended", refund_amount="50000.00") -> object:
 HAPPY = [route("ledger_agent"), route("fraud_agent"), route("finish"), verdict()]
 
 
+class Outcome:
+    """The finished dispute, shaped like a response so the tests read the triage result directly."""
+
+    status_code = 200
+
+    def __init__(self, view: dict) -> None:
+        self.view = view  # the whole DisputeView returned by GET /v1/disputes/{id}
+        self.text = json.dumps(view)
+
+    def json(self) -> dict:
+        return self.view["result"]
+
+
+def wait_until_done(client, dispute_id: str, headers: dict) -> dict:
+    """Poll the status endpoint until the run is over, as a client app would."""
+    for _ in range(500):
+        view = client.get(f"{URL}/{dispute_id}", headers=headers).json()
+        if view["execution_status"] in ("finished", "failed"):
+            return view
+        time.sleep(0.01)
+    raise AssertionError(f"dispute {dispute_id} never finished: {view}")
+
+
 def triage(script, specialists=None, headers=None, **app_options):
-    """Run one triage request. Returns (response, scripted model, fake specialists)."""
+    """Submit one dispute and wait for its result. Returns (outcome, scripted model, fake specialists).
+
+    A request refused at intake (401, 404) is returned as the raw response instead.
+    """
     model = ScriptedChatModel(script=script)
     specialists = specialists or FakeSpecialists()
     app = create_app(auth=SETTINGS, model=model, specialists=specialists, tracing=Tracing(),
-                     policy=RefundPolicyConfig(), **app_options)
+                     policy=RefundPolicyConfig(), gate=InMemoryGate(), store=InMemoryDisputeStore(), **app_options)
+    auth_headers = bearer("user-1001") if headers is None else headers
     with TestClient(app) as client:
-        response = client.post(URL, json=DISPUTE, headers=bearer("user-1001") if headers is None else headers)
-    return response, model, specialists
+        submitted = client.post(URL, json=DISPUTE, headers=auth_headers)
+        if submitted.status_code != 202:
+            return submitted, model, specialists
+        view = wait_until_done(client, submitted.json()["dispute_id"], auth_headers)
+    return Outcome(view), model, specialists
 
 
 def failed_checks(body: dict) -> set[str]:
@@ -272,3 +306,22 @@ def test_disputing_someone_elses_transaction_is_404_without_calling_the_model():
     response, model, specialists = triage(HAPPY, FakeSpecialists(owns=False))
     assert response.status_code == 404
     assert model.seen == [] and specialists.ledger_calls == 0
+
+
+# --- The stored dispute -------------------------------------------------------------------------------
+
+
+def test_the_two_statuses_are_reported_separately():
+    script = [route("ledger_agent"), route("fraud_agent"), route("finish"), verdict(refund_amount="450000.00")]
+    outcome, _, _ = triage(script, FakeSpecialists(debited="450000.00"))
+
+    # The run finished; the customer's dispute is still waiting for a person.
+    assert (outcome.view["execution_status"], outcome.view["status"]) == ("finished", "pending_human_approval")
+    assert outcome.view["customer_message"] == outcome.json()["customer_message"]
+    assert outcome.view["dispute_id"] == outcome.json()["dispute_id"] == outcome.json()["verdict"]["dispute_id"]
+
+
+def test_an_approved_refund_is_never_reported_as_paid_or_resolved():
+    outcome, _, _ = triage(HAPPY)
+    assert outcome.view["status"] == "refund_approved"
+    assert "It has not been paid yet." in outcome.view["customer_message"]

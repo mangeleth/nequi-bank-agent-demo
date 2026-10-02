@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated, Literal, TypedDict
+from uuid import UUID
 
 from langchain_core.exceptions import OutputParserException
 from langchain_core.language_models import BaseChatModel
@@ -100,6 +101,7 @@ class TriageContext:
     """Per-request facts set by our code. Not part of the state, so never shown to the model
     and never written to traces."""
 
+    dispute_id: UUID  # the stored dispute this run belongs to
     caller: CallerIdentity
     token: str  # the customer's JWT, forwarded to the agents
     specialists: Specialists
@@ -282,10 +284,11 @@ def build_graph(model: BaseChatModel):
         return {"fraud": fraud, "fraud_calls": calls,
                 "steps": [f"fraud_agent{required}: risk {fraud.risk_level.value} ({fraud.risk_score})"]}
 
-    async def write_verdict(state: TriageState) -> dict:
+    async def write_verdict(state: TriageState, runtime: Runtime[TriageContext]) -> dict:
         try:
             draft = await verdict_writer.ainvoke([SystemMessage(VERDICT_PROMPT), HumanMessage(_situation(state))])
             result = DisputeVerdict(
+                dispute_id=runtime.context.dispute_id,
                 transaction_id=state["dispute"].transaction_id,
                 decision=draft.decision,
                 refund_amount=Decimal(draft.refund_amount) if draft.refund_amount else None,
