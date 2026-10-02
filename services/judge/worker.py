@@ -17,6 +17,7 @@ no request can reach it. Run locally:  uvicorn services.judge.worker:create_app 
 import asyncio
 import logging
 import os
+import random
 from datetime import datetime
 from decimal import Decimal
 from collections.abc import AsyncIterator
@@ -119,9 +120,18 @@ async def send_to_customer_service(store: DisputeStore, record: DisputeRecord, v
     await store.flag_follow_up(record.dispute_id, problems(verdict))
 
 
+CONTROL_SAMPLE_RATE = 0.10  # share of the judge's PASSES also sent to a person (JUDGE_CONTROL_SAMPLE)
+
+
 class JudgeWorker:
-    def __init__(self, *, store: DisputeStore, jobs: JudgeJobs, model: BaseChatModel, evidence: Evidence) -> None:
+    """`control_sample_rate`: people only see what the judge flags, so its UNSAFE passes (it said
+    pass, a person would say fail) would never be found. A random share of passes is therefore sent
+    to customer service too, labelled the same way, so they can be measured (ADR-0026)."""
+
+    def __init__(self, *, store: DisputeStore, jobs: JudgeJobs, model: BaseChatModel, evidence: Evidence,
+                 control_sample_rate: float = CONTROL_SAMPLE_RATE, rng: random.Random | None = None) -> None:
         self.store, self.jobs, self.model, self.evidence = store, jobs, model, evidence
+        self.control_sample_rate, self.rng = control_sample_rate, rng or random.Random()
 
     async def handle(self, job: JudgeJob) -> None:
         """Grade one dispute. Never raises: every outcome acknowledges the job, or leaves it for a retry."""
@@ -138,11 +148,16 @@ class JudgeWorker:
                 await self.jobs.ack(job)
                 return
             verdict = await judge(self.model, case)
-            await self.store.save_judgement(job.dispute_id, verdict.model_dump(), passed=verdict.passed,
-                                            prompt_version=PROMPT_VERSION)
+            # Keep exactly what the judge saw: a person's later re-assessment of this case becomes a
+            # labelled example that can be exported to the calibration set.
+            await self.store.save_judgement(job.dispute_id, verdict.model_dump() | {"case": case.model_dump()},
+                                            passed=verdict.passed, prompt_version=PROMPT_VERSION)
             if not verdict.passed:
                 await send_to_customer_service(self.store, record, verdict.model_dump())
                 log.warning("dispute %s sent to customer service: the judge found problems", job.dispute_id)
+            elif self.rng.random() < self.control_sample_rate:
+                await self.store.flag_follow_up(job.dispute_id, "control sample: the judge passed it; a person "
+                                                "checks it too", kind="control_sample")
             await self.jobs.ack(job)
             log.info("judged dispute %s: %s", job.dispute_id, "pass" if verdict.passed else "FAIL")
         except Exception as exc:
@@ -176,7 +191,8 @@ def create_app(*, store: DisputeStore | None = None, jobs: JudgeJobs | None = No
         if model is None:
             from shared.llm import build_chat_model
         worker = JudgeWorker(store=app.state.store, jobs=app.state.jobs, model=model or build_chat_model(),
-                             evidence=evidence or Evidence(http, os.environ["CORE_SYSTEMS_URL"]))
+                             evidence=evidence or Evidence(http, os.environ["CORE_SYSTEMS_URL"]),
+                             control_sample_rate=float(os.environ.get("JUDGE_CONTROL_SAMPLE", CONTROL_SAMPLE_RATE)))
         app.state.consumer = asyncio.create_task(worker.run_forever())
         log.info("judge worker started (prompt %s)", PROMPT_VERSION)
         yield

@@ -88,12 +88,24 @@ class ReviewRequest(BaseModel):
     note: str = Field(min_length=5, max_length=500)
 
 
+class HumanVerdict(BaseModel):
+    """A person's own pass/fail per criterion: a human label on the judge's verdict (ADR-0026)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    groundedness: bool
+    completeness: bool
+    clarity: bool
+
+
 class FollowUpDone(BaseModel):
-    """What customer service did about it, for the audit trail."""
+    """A person's re-assessment of the explanation, for evaluating the judge. It changes nothing
+    about the dispute and is never shown to the customer."""
 
     model_config = ConfigDict(extra="forbid")
 
     note: str = Field(min_length=5, max_length=500)
+    human_verdict: HumanVerdict
 
 
 def build_queue() -> DisputeQueue:
@@ -334,10 +346,16 @@ def create_app(
 
     @app.post("/v1/reviews/follow-ups/{dispute_id}/resolve")
     async def resolve_follow_up(dispute_id: UUID, body: FollowUpDone, request: Request, who: Reviewer) -> dict:
-        if not await request.app.state.store.resolve_follow_up(dispute_id, who.reviewer_id, body.note):
+        if not await request.app.state.store.resolve_follow_up(dispute_id, who.reviewer_id, body.note,
+                                                               body.human_verdict.model_dump()):
             raise HTTPException(409, "there is no open follow-up for this dispute")
         log.info("follow-up of dispute %s done by %s", dispute_id, who.reviewer_id)
         return {"dispute_id": str(dispute_id), "resolved_by": who.reviewer_id}
+
+    @app.get("/v1/reviews/human-labels")
+    async def human_labels(request: Request, who: Reviewer) -> list[dict]:
+        """People's re-assessments next to the judge's verdicts, for evaluating the judge."""
+        return jsonable_encoder(await request.app.state.store.human_labels())
 
     @app.get("/v1/reviews/judgements")
     async def recent_judgements(request: Request, who: Reviewer) -> list[dict]:

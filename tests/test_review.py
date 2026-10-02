@@ -16,6 +16,7 @@ from tests.jwt_helpers import DELEGATION, SETTINGS, SIGNER, bearer, claims, sign
 from tests.test_supervisor import DISPUTE, URL, FakeSpecialists, route, verdict
 
 # 450.000 COP is over the automatic limit: the policy sends it to a person.
+HUMAN_OK = {"groundedness": True, "completeness": True, "clarity": True}
 TO_A_PERSON = [route("ledger_agent"), route("fraud_agent"), route("finish"), verdict(refund_amount="450000.00")]
 
 
@@ -150,9 +151,10 @@ def test_customer_service_sees_and_resolves_what_the_judge_flagged():
         open_ = bank.http.get("/v1/reviews/follow-ups", headers=reviewer_headers()).json()
         customer = bank.http.get("/v1/reviews/follow-ups", headers=bearer("user-1001"))
         done = bank.http.post(f"/v1/reviews/follow-ups/{dispute_id}/resolve",
-                              json={"note": "called the customer and corrected it"}, headers=reviewer_headers())
+                              json={"note": "called the customer and corrected it", "human_verdict": HUMAN_OK},
+                              headers=reviewer_headers())
         again = bank.http.post(f"/v1/reviews/follow-ups/{dispute_id}/resolve",
-                               json={"note": "a second time"}, headers=reviewer_headers())
+                               json={"note": "a second time", "human_verdict": HUMAN_OK}, headers=reviewer_headers())
         after = bank.http.get("/v1/reviews/follow-ups", headers=reviewer_headers()).json()
 
     assert [(f["dispute"]["dispute_id"], f["reason"]) for f in open_] == [(dispute_id, "groundedness: invented cause")]
@@ -173,7 +175,7 @@ def test_a_customer_service_check_is_recorded_internally_and_invisible_to_the_cu
         from uuid import UUID as _UUID
 
         _asyncio.run(bank.app.state.store.flag_follow_up(_UUID(dispute_id), "clarity: code-like text"))
-        bank.http.post(f"/v1/reviews/follow-ups/{dispute_id}/resolve", json={"note": "explanation checked, fine"},
+        bank.http.post(f"/v1/reviews/follow-ups/{dispute_id}/resolve", json={"note": "explanation checked, fine", "human_verdict": HUMAN_OK},
                        headers=reviewer_headers(sub="ops-luis"))
         after = bank.http.get(f"{URL}/{dispute_id}", headers=bearer("user-1001")).json()
         internal = bank.http.get(f"/v1/reviews/disputes/{dispute_id}", headers=reviewer_headers()).json()
@@ -185,3 +187,26 @@ def test_a_customer_service_check_is_recorded_internally_and_invisible_to_the_cu
     notes = [e["note"] for e in internal["events"]]  # the system knows, in the audit trail
     assert "sent to customer service: clarity: code-like text" in notes
     assert "customer service follow-up done by ops-luis: explanation checked, fine" in notes
+
+
+
+def test_resolving_requires_the_persons_three_answers_and_they_become_a_label():
+    with Bank() as bank:
+        dispute_id = bank.dispute_waiting_for_a_person()
+        import asyncio as _asyncio
+        from uuid import UUID as _UUID
+
+        _asyncio.run(bank.app.state.store.flag_follow_up(_UUID(dispute_id), "groundedness: invented cause"))
+        url = f"/v1/reviews/follow-ups/{dispute_id}/resolve"
+        missing = bank.http.post(url, json={"note": "looked at it"}, headers=reviewer_headers())
+        partial = bank.http.post(url, json={"note": "looked at it", "human_verdict": {"groundedness": True}},
+                                 headers=reviewer_headers())
+        done = bank.http.post(url, json={"note": "the cause is in the record",
+                                         "human_verdict": {"groundedness": True, "completeness": True,
+                                                           "clarity": False}}, headers=reviewer_headers())
+        labels = bank.http.get("/v1/reviews/human-labels", headers=reviewer_headers()).json()
+        customer = bank.http.get("/v1/reviews/human-labels", headers=bearer("user-1001"))
+
+    assert missing.status_code == partial.status_code == 422 and done.status_code == 200
+    assert [(l["dispute_id"], l["human_verdict"]["clarity"]) for l in labels] == [(dispute_id, False)]
+    assert customer.status_code == 401

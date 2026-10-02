@@ -24,3 +24,5 @@ data:
   AOAI_NAME: ${AOAI_NAME}
   AOAI_DEPLOYMENT: ${AOAI_DEPLOYMENT}
   AOAI_API_VERSION: ${AOAI_API_VERSION}
+  # Share of the judge's passes also sent to a person, to measure its unsafe passes (ADR-0026)
+  JUDGE_CONTROL_SAMPLE: "0.10"

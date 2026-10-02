@@ -435,9 +435,13 @@ class ReviewClient:
     def follow_ups(self, token: str) -> list[dict]:
         return self._get(token, "/v1/reviews/follow-ups")
 
-    def resolve(self, token: str, dispute_id: str, note: str) -> httpx.Response:
-        return self._http.post(f"/v1/reviews/follow-ups/{dispute_id}/resolve", json={"note": note},
+    def resolve(self, token: str, dispute_id: str, note: str, human_verdict: dict[str, bool]) -> httpx.Response:
+        return self._http.post(f"/v1/reviews/follow-ups/{dispute_id}/resolve",
+                               json={"note": note, "human_verdict": human_verdict},
                                headers={"Authorization": f"Bearer {token}"})
+
+    def human_labels(self, token: str) -> list[dict]:
+        return self._get(token, "/v1/reviews/human-labels")
 
     def decide(self, token: str, dispute_id: str, decision: str, note: str) -> httpx.Response:
         return self._http.post(f"/v1/reviews/disputes/{dispute_id}/decision", json={"decision": decision, "note": note},
@@ -560,3 +564,32 @@ def decision_summary(result: dict | None) -> list[str]:
         lines.append(f"💸 **Pagada** por el libro contable {colombia_time(payment['executed_at'])}: "
                      f"{payment['amount']} {payment['currency']}, reembolso `{payment['refund_id']}`.")
     return lines
+
+
+
+# --- The judge against people, on real disputes (ADR-0026) -------------------------------------------
+
+
+def judge_vs_people(labels: list[dict]) -> dict:
+    """How the judge compares with the people who re-assessed real disputes, per criterion.
+
+    confirmed      the judge said FAIL and the person agreed
+    false alarms   the judge said FAIL, the person said PASS
+    unsafe passes  the judge said PASS, the person said FAIL (only found through control samples)
+    """
+    per = {name: {"reviewed": 0, "agree": 0, "confirmed": 0, "false_alarms": 0, "unsafe_passes": 0}
+           for name in CRITERIA_ES}
+    kinds = {"judge_flag": 0, "control_sample": 0}
+    for label in labels:
+        kinds[label.get("kind", "judge_flag")] = kinds.get(label.get("kind", "judge_flag"), 0) + 1
+        judge = ((label.get("judgement") or {}).get("result") or {})
+        for name, counts in per.items():
+            if name not in judge or name not in (label.get("human_verdict") or {}):
+                continue
+            j, h = judge[name]["passed"], label["human_verdict"][name]
+            counts["reviewed"] += 1
+            counts["agree"] += j == h
+            counts["confirmed"] += (not j) and (not h)
+            counts["false_alarms"] += (not j) and h
+            counts["unsafe_passes"] += j and (not h)
+    return {"labels": len(labels), "kinds": kinds, "criteria": per}

@@ -337,3 +337,20 @@ def test_the_summary_for_the_policy_and_for_an_incident():
                                       "verdict": {"decided_at": "2026-10-02T17:00:00Z"}})
     assert "INC-20261001-01" in covered[0] and "sin un modelo" in covered[0]
     assert logic.decision_summary(None) == []
+
+
+def test_judge_vs_people_counts_confirmations_false_alarms_and_unsafe_passes():
+    def label(kind, judge, human):
+        names = ("groundedness", "completeness", "clarity")
+        return {"kind": kind, "human_verdict": dict(zip(names, human, strict=True)),
+                "judgement": {"result": {n: {"passed": j, "reason": "r"} for n, j in zip(names, judge, strict=True)}}}
+
+    stats = logic.judge_vs_people([
+        label("judge_flag", (False, True, True), (False, True, True)),  # the judge was right
+        label("judge_flag", (False, True, True), (True, True, True)),  # a false alarm
+        label("control_sample", (True, True, True), (False, True, True)),  # an unsafe pass, found by sampling
+    ])
+    g = stats["criteria"]["groundedness"]
+    assert (g["reviewed"], g["agree"], g["confirmed"], g["false_alarms"], g["unsafe_passes"]) == (3, 1, 1, 1, 1)
+    assert stats["kinds"] == {"judge_flag": 2, "control_sample": 1}
+    assert stats["criteria"]["clarity"]["agree"] == 3

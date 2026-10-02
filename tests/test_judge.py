@@ -85,3 +85,21 @@ def test_the_calibration_set_is_well_formed_and_keeps_a_held_out_split():
     for c in doc["cases"]:
         assert set(c["labels"]) == {k.value for k in Criterion} and set(c["labels"].values()) <= {"PASS", "FAIL"}
         JudgeCase(question=c["question"], answer=c["answer"], evidence=c["evidence"])
+
+
+def test_a_persons_label_is_exported_as_a_calibration_case():
+    from evals.judge_labels_export import to_cases
+
+    case = {"question": {"transaction_id": "TX-20261001000001"}, "answer": {"explanation": "x"}, "evidence": {"t": 1}}
+    labels = [
+        {"dispute_id": "5f0e7c1a-0000", "kind": "control_sample", "resolved_by": "ops-ana", "note": "the cause is wrong",
+         "human_verdict": {"groundedness": False, "completeness": True, "clarity": True},
+         "judgement": {"result": {"case": case}}},
+        {"dispute_id": "aaaa", "kind": "judge_flag", "human_verdict": {"groundedness": True, "completeness": True,
+                                                                       "clarity": True},
+         "judgement": {"result": {}}},  # judged before cases were kept: skipped
+    ]
+    (exported,) = to_cases(labels)
+    assert exported["labels"] == {"groundedness": "FAIL", "completeness": "PASS", "clarity": "PASS"}
+    assert (exported["split"], exported["source"], exported["labelled_by"]) == ("production", "control_sample", "ops-ana")
+    JudgeCase(question=exported["question"], answer=exported["answer"], evidence=exported["evidence"])

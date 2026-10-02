@@ -222,11 +222,11 @@ async def test_the_consumer_survives_redis_being_flushed():
 # --- A verdict that needs revision goes to customer service (ADR-0026) -----------------------------
 
 
-async def judged(store, dispute_id, script, evidence=None):
+async def judged(store, dispute_id, script, evidence=None, control_sample_rate=0.0):
     jobs = InMemoryJudgeJobs()
     await jobs.enqueue(dispute_id)
     await drain(JudgeWorker(store=store, jobs=jobs, model=ScriptedChatModel(script=script),
-                            evidence=evidence or FakeEvidence()), jobs)
+                            evidence=evidence or FakeEvidence(), control_sample_rate=control_sample_rate), jobs)
 
 
 async def test_a_bad_explanation_goes_to_customer_service_and_the_decision_is_not_changed():
@@ -277,3 +277,26 @@ async def test_an_explanation_that_could_not_be_judged_also_goes_to_customer_ser
 
     (follow_up,) = await store.follow_ups()
     assert "could not evaluate" in follow_up["reason"]
+
+
+
+async def test_the_judgement_keeps_the_case_the_judge_saw():
+    store = InMemoryDisputeStore()
+    dispute_id = await finished_dispute(store)
+    await judged(store, dispute_id, [verdict_call(grounded=False)])
+    case = (await store.judgement(dispute_id))["result"]["case"]
+    assert case["answer"]["explanation"] == "It failed with a processing error."
+    assert case["evidence"] == EVIDENCE and case["question"]["transaction_id"] == TX
+
+
+async def test_a_random_share_of_passes_is_sent_as_a_control_sample():
+    store = InMemoryDisputeStore()
+    sampled = await finished_dispute(store)
+    await judged(store, sampled, [verdict_call(grounded=True)], control_sample_rate=1.0)
+    (follow_up,) = await store.follow_ups()
+    assert (follow_up["dispute_id"], follow_up["kind"]) == (sampled, "control_sample")
+
+    other = InMemoryDisputeStore()
+    not_sampled = await finished_dispute(other)
+    await judged(other, not_sampled, [verdict_call(grounded=True)], control_sample_rate=0.0)
+    assert await other.follow_ups() == []

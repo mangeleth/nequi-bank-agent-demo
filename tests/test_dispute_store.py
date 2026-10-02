@@ -226,3 +226,20 @@ async def test_a_dispute_sent_to_customer_service_is_flagged_once_and_resolved_o
     notes = [e["note"] for e in await store.events(record.dispute_id)]
     assert notes[-2:] == ["sent to customer service: the judge found an invented cause",
                           "customer service follow-up done by ops-ana: called the customer and corrected it"]
+
+
+async def test_a_persons_reassessment_is_stored_as_a_human_label_next_to_the_judges_verdict(store):
+    record, _ = await new_dispute(store)
+    judge = {"groundedness": {"passed": False, "reason": "invented cause"},
+             "completeness": {"passed": True, "reason": "ok"}, "clarity": {"passed": True, "reason": "ok"}}
+    await store.save_judgement(record.dispute_id, judge, passed=False, prompt_version="v3")
+    await store.flag_follow_up(record.dispute_id, "groundedness: invented cause", kind="judge_flag")
+    assert await store.human_labels() == []  # not re-assessed yet
+
+    human = {"groundedness": True, "completeness": True, "clarity": True}  # the person disagrees: a false alarm
+    assert await store.resolve_follow_up(record.dispute_id, "ops-ana", "the cause is in the record", human)
+
+    (label,) = await store.human_labels()
+    assert (label["kind"], label["resolved_by"], label["human_verdict"]) == ("judge_flag", "ops-ana", human)
+    assert label["judgement"]["result"]["groundedness"]["passed"] is False  # the judge's, kept beside it
+    assert (await store.load(record.dispute_id)).business_status == DisputeStatus.RECEIVED  # nothing changed

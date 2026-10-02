@@ -248,34 +248,48 @@ def customer_service(token: str) -> None:
     """Disputes the AI judge sent to customer service (ADR-0026): the explanation failed the quality
     check, so a person checks what the customer was told. Money is never touched here."""
     follow_ups = reviews().follow_ups(token)
-    st.subheader(f"🛎️ Servicio al cliente: {len(follow_ups)} explicación(es) que el juez marcó")
+    st.subheader(f"🛎️ Servicio al cliente: {len(follow_ups)} explicación(es) por re-evaluar")
     if not follow_ups:
-        st.caption("Cuando el juez de IA encuentra problemas en una explicación (o no la puede evaluar), la "
-                   "disputa llega aquí. Si estaba cerrada sin reembolso, además se reabre en la cola de revisión.")
+        st.caption("Llegan aquí las explicaciones que el juez de IA marcó (o no pudo evaluar), y una muestra al "
+                   "azar de las que aprobó. Una persona las re-evalúa: la disputa no cambia.")
         return
     st.dataframe(pd.DataFrame([{"disputa": str(f["dispute_id"])[:8], "cliente": f["customer_id"],
                                 "transferencia": f["dispute"]["transaction_id"],
                                 "estado": logic.STATUS_LABELS.get(f["dispute"]["status"], f["dispute"]["status"]),
-                                "problema que encontró el juez": f["reason"]} for f in follow_ups]),
+                                "origen": "🔎 muestra de control" if f.get("kind") == "control_sample" else "🧑‍⚖️ marcada por el juez",
+                                "motivo": f["reason"]} for f in follow_ups]),
                  hide_index=True, width="stretch")
     chosen = st.selectbox("Caso a atender", [str(f["dispute_id"]) for f in follow_ups], key="follow-up-selected",
                           format_func=lambda d: next(f"{d[:8]} · {f['customer_id']} · {f['dispute']['transaction_id']}"
                                                      for f in follow_ups if str(f["dispute_id"]) == d))
     item = next(f for f in follow_ups if str(f["dispute_id"]) == chosen)
+    st.caption("Tu evaluación es una etiqueta humana para medir al juez: no cambia la disputa ni lo que ve el "
+               "cliente. Respóndela **antes** de mirar al juez, para no dejarte influir.")
     left, right = st.columns(2, gap="large")
     with left:
-        show_judgement(item.get("judgement"))
-    with right:
-        st.markdown("**Lo que se le dijo al cliente** (texto del sistema, sin traducir)")
-        st.write(item["dispute"]["customer_message"])
-        if explanation := ((item["dispute"].get("result") or {}).get("verdict") or {}).get("explanation"):
+        result = item["dispute"].get("result") or {}
+        if explanation := (result.get("verdict") or {}).get("explanation"):
             st.markdown("**Explicación de los agentes** (texto del sistema, sin traducir)")
             st.write(explanation)
-    note = st.text_area("Qué hiciste (obligatorio, queda en la auditoría)", key=f"cs-note-{chosen}", max_chars=500)
-    if st.button("Marcar como atendido", disabled=len(note.strip()) < 5, key=f"cs-done-{chosen}"):
-        response = reviews().resolve(token, chosen, note.strip())
+        st.markdown("**Lo que se le dijo al cliente** (texto del sistema, sin traducir)")
+        st.write(item["dispute"]["customer_message"])
+        if ledger := result.get("ledger"):
+            st.markdown(f"**Registros:** {ledger['settlement_status']}, debitado {ledger['debited_amount']}, "
+                        f"acreditado {ledger['credited_amount']} {ledger.get('currency', 'COP')}")
+    with right:
+        st.markdown("**Tu evaluación de la explicación**")
+        answers = {name: st.radio(label, [True, False], index=None, horizontal=True, key=f"cs-{name}-{chosen}",
+                                  format_func=lambda ok: "✅ cumple" if ok else "❌ no cumple")
+                   for name, label in logic.CRITERIA_ES.items()}
+        with st.expander("Ver la evaluación del juez (después de responder)"):
+            show_judgement(item.get("judgement"))
+    note = st.text_area("Qué hiciste o qué observaste (obligatorio, queda en la auditoría)", key=f"cs-note-{chosen}",
+                        max_chars=500)
+    ready = len(note.strip()) >= 5 and all(v is not None for v in answers.values())
+    if st.button("Guardar evaluación y cerrar el caso", disabled=not ready, key=f"cs-done-{chosen}"):
+        response = reviews().resolve(token, chosen, note.strip(), answers)
         if response.status_code == 200:
-            st.success("Caso atendido y registrado en la auditoría.")
+            st.success("Evaluación guardada como etiqueta humana; el caso queda cerrado en la auditoría.")
             st.session_state.pop("follow-up-selected", None)
         else:
             st.error(f"HTTP {response.status_code}: {response.json().get('detail', response.text)}")
@@ -425,9 +439,22 @@ def judge_health() -> None:
                                       "clarity_unsafe": "inseguras · claridad"}),
                  hide_index=True, width="stretch")
     try:
-        recent = reviews().judgements(logic.login_reviewer(logic.REVIEWERS[0], login_settings()))
+        token = logic.login_reviewer(logic.REVIEWERS[0], login_settings())
+        recent, labels = reviews().judgements(token), reviews().human_labels(token)
     except Exception:
-        recent = []
+        recent, labels = [], []
+    st.markdown("**El juez frente a las personas, en disputas reales**")
+    if not labels:
+        st.caption("Aún no hay re-evaluaciones de personas. Se acumulan desde la pestaña de revisión "
+                   "(servicio al cliente): casos marcados por el juez y muestras de control.")
+    else:
+        stats = logic.judge_vs_people(labels)
+        st.caption(f"{stats['labels']} re-evaluación(es): {stats['kinds'].get('judge_flag', 0)} marcadas por el juez, "
+                   f"{stats['kinds'].get('control_sample', 0)} muestras de control.")
+        st.dataframe(pd.DataFrame([{"criterio": logic.CRITERIA_ES[name], "re-evaluadas": c["reviewed"],
+                                    "de acuerdo": c["agree"], "fallas confirmadas": c["confirmed"],
+                                    "falsas alarmas": c["false_alarms"], "aprobaciones inseguras": c["unsafe_passes"]}
+                                   for name, c in stats["criteria"].items()]), hide_index=True, width="stretch")
     if recent:
         st.markdown("**Últimas disputas evaluadas por el juez**")
         st.dataframe(pd.DataFrame([{"disputa": str(j["dispute_id"])[:8], "transferencia": j["transaction_id"],

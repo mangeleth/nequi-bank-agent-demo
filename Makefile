@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: test-db test-servicebus venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster judge-calibrate failure-tests failure-test-kill redis-image postgres-image postgres-password ledger-password ledger-db incident-refunds demo-idp-publish ui ui-publish ui-unpublish run-ui signing-key signing-grant signing-key-publish servicebus-create sb-grant demo-reset test guard-clean validate build push deploy smoke release
+.PHONY: test-db test-servicebus venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster judge-calibrate judge-labels-export failure-tests failure-test-kill redis-image postgres-image postgres-password ledger-password ledger-db incident-refunds demo-idp-publish ui ui-publish ui-unpublish run-ui signing-key signing-grant signing-key-publish servicebus-create sb-grant demo-reset test guard-clean validate build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -399,6 +399,14 @@ eval:
 ## Calibrate the LLM judge against the labelled cases (ADR-0026). Calls the real model (~$0.05).
 judge-calibrate:
 	.venv/bin/python -m evals.judge_calibrate
+
+## Export people's re-assessments of real disputes as calibration cases (ADR-0026)
+judge-labels-export:
+	@mkdir -p .local
+	@kubectl port-forward -n $(K8S_NAMESPACE) svc/supervisor 18004:80 >/dev/null 2>&1 & echo $$! > .local/port-forward.pid
+	@sleep 4
+	@SUPERVISOR_URL=http://127.0.0.1:18004 .venv/bin/python -m evals.judge_labels_export; status=$$?; \
+		kill $$(cat .local/port-forward.pid) 2>/dev/null; rm -f .local/port-forward.pid; exit $$status
 
 ## Evaluate the system deployed on AKS, through a temporary port-forward to the supervisor
 eval-cluster:

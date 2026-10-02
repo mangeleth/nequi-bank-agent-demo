@@ -96,15 +96,24 @@ class DisputeStore(Protocol):
         finished or failed. False if the dispute is no longer waiting for a person, so two
         reviewers cannot both decide it."""
 
-    async def flag_follow_up(self, dispute_id: UUID, reason: str) -> bool:
-        """Send a dispute to customer service: a person should check what the customer was told
-        (ADR-0026). Never changes the dispute's status or money. False if already flagged."""
+    async def flag_follow_up(self, dispute_id: UUID, reason: str, kind: str = "judge_flag") -> bool:
+        """Send a dispute to customer service, where a person re-assesses the explanation (ADR-0026).
+        `kind` is "judge_flag" (the judge found problems) or "control_sample" (a random share of
+        the judge's passes, so its unsafe passes can be measured). Never changes the dispute's
+        status or money. False if already flagged."""
 
     async def follow_ups(self, limit: int = 50) -> list[dict]:
         """Open follow-ups, oldest first, with the dispute's transaction, customer, and status."""
 
-    async def resolve_follow_up(self, dispute_id: UUID, reviewer_id: str, note: str) -> bool:
-        """Customer service has dealt with it. False if there is no open follow-up."""
+    async def resolve_follow_up(self, dispute_id: UUID, reviewer_id: str, note: str,
+                                human_verdict: dict[str, bool] | None = None) -> bool:
+        """A person re-assessed the explanation: `human_verdict` is their pass/fail per criterion, a
+        human label for evaluating the judge. Nothing about the dispute changes. False if there is
+        no open follow-up."""
+
+    async def human_labels(self, limit: int = 500) -> list[dict]:
+        """Re-assessed follow-ups, newest first: the person's verdict next to the judge's, and the
+        case the judge saw. For measuring and recalibrating the judge."""
 
     async def save_judgement(self, dispute_id: UUID, result: dict, *, passed: bool | None,
                              prompt_version: str) -> None:
@@ -228,11 +237,12 @@ class InMemoryDisputeStore:
             customer_message=result.customer_message, result=result.model_dump(mode="json"),
         )
 
-    async def flag_follow_up(self, dispute_id, reason):
+    async def flag_follow_up(self, dispute_id, reason, kind="judge_flag"):
         if dispute_id in self._follow_ups or dispute_id not in self._by_id:
             return False
-        self._follow_ups[dispute_id] = {"dispute_id": dispute_id, "reason": reason, "flagged_at": datetime.now(UTC),
-                                        "resolved_by": None, "resolved_at": None, "note": None}
+        self._follow_ups[dispute_id] = {"dispute_id": dispute_id, "reason": reason, "kind": kind,
+                                        "flagged_at": datetime.now(UTC), "resolved_by": None, "resolved_at": None,
+                                        "note": None, "human_verdict": None}
         self._log(self._by_id[dispute_id], f"sent to customer service: {reason}")
         return True
 
@@ -242,13 +252,20 @@ class InMemoryDisputeStore:
                      "user_id": self._by_id[f["dispute_id"]].user_id,
                      "business_status": self._by_id[f["dispute_id"]].business_status.value} for f in rows[:limit]]
 
-    async def resolve_follow_up(self, dispute_id, reviewer_id, note):
+    async def resolve_follow_up(self, dispute_id, reviewer_id, note, human_verdict=None):
         follow_up = self._follow_ups.get(dispute_id)
         if follow_up is None or follow_up["resolved_at"] is not None:
             return False
-        follow_up |= {"resolved_by": reviewer_id, "resolved_at": datetime.now(UTC), "note": note}
+        follow_up |= {"resolved_by": reviewer_id, "resolved_at": datetime.now(UTC), "note": note,
+                      "human_verdict": human_verdict}
         self._log(self._by_id[dispute_id], f"customer service follow-up done by {reviewer_id}: {note}")
         return True
+
+    async def human_labels(self, limit=500):
+        done = [f for f in self._follow_ups.values() if f["human_verdict"] is not None]
+        done.sort(key=lambda f: f["resolved_at"], reverse=True)
+        return [f | {"judgement": self._judgements.get(f["dispute_id"]),
+                     "transaction_id": self._by_id[f["dispute_id"]].transaction_id} for f in done[:limit]]
 
     async def save_judgement(self, dispute_id, result, *, passed, prompt_version):
         self._judgements[dispute_id] = {"dispute_id": dispute_id, "judged_at": datetime.now(UTC), "passed": passed,
@@ -305,6 +322,9 @@ CREATE TABLE IF NOT EXISTS dispute_follow_ups (   -- sent to customer service by
     note         text
 );
 CREATE INDEX IF NOT EXISTS dispute_follow_ups_open ON dispute_follow_ups (flagged_at) WHERE resolved_at IS NULL;
+-- Added for human labels: why it was sent, and the person's re-assessment per criterion.
+ALTER TABLE dispute_follow_ups ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'judge_flag';
+ALTER TABLE dispute_follow_ups ADD COLUMN IF NOT EXISTS human_verdict jsonb;
 
 CREATE TABLE IF NOT EXISTS dispute_events (   -- append-only audit trail of every status change
     event_id          bigserial PRIMARY KEY,
@@ -459,12 +479,12 @@ class PostgresDisputeStore:
             "SELECT dispute_id, execution_status, business_status, %s FROM disputes WHERE dispute_id = %s",
             (note, dispute_id))
 
-    async def flag_follow_up(self, dispute_id, reason):
+    async def flag_follow_up(self, dispute_id, reason, kind="judge_flag"):
         async with self._pool.connection() as conn, conn.transaction():
             cursor = await conn.execute(
-                "INSERT INTO dispute_follow_ups (dispute_id, reason) SELECT %s, %s WHERE EXISTS "
+                "INSERT INTO dispute_follow_ups (dispute_id, reason, kind) SELECT %s, %s, %s WHERE EXISTS "
                 "(SELECT 1 FROM disputes WHERE dispute_id = %s) ON CONFLICT (dispute_id) DO NOTHING",
-                (dispute_id, reason, dispute_id))
+                (dispute_id, reason, kind, dispute_id))
             if cursor.rowcount != 1:
                 return False
             await self._note(conn, dispute_id, f"sent to customer service: {reason}")
@@ -473,20 +493,32 @@ class PostgresDisputeStore:
     async def follow_ups(self, limit=50):
         async with self._pool.connection() as conn:
             cursor = await conn.execute(
-                "SELECT f.dispute_id, f.reason, f.flagged_at, f.resolved_by, f.resolved_at, f.note, d.transaction_id, "
+                "SELECT f.dispute_id, f.reason, f.kind, f.flagged_at, f.resolved_by, f.resolved_at, f.note, d.transaction_id, "
                 "d.user_id, d.business_status FROM dispute_follow_ups f JOIN disputes d USING (dispute_id) "
                 "WHERE f.resolved_at IS NULL ORDER BY f.flagged_at LIMIT %s", (limit,))
             return await cursor.fetchall()
 
-    async def resolve_follow_up(self, dispute_id, reviewer_id, note):
+    async def resolve_follow_up(self, dispute_id, reviewer_id, note, human_verdict=None):
+        from psycopg.types.json import Jsonb
+
         async with self._pool.connection() as conn, conn.transaction():
             cursor = await conn.execute(
-                "UPDATE dispute_follow_ups SET resolved_by = %s, resolved_at = now(), note = %s "
-                "WHERE dispute_id = %s AND resolved_at IS NULL", (reviewer_id, note, dispute_id))
+                "UPDATE dispute_follow_ups SET resolved_by = %s, resolved_at = now(), note = %s, human_verdict = %s "
+                "WHERE dispute_id = %s AND resolved_at IS NULL",
+                (reviewer_id, note, Jsonb(human_verdict) if human_verdict is not None else None, dispute_id))
             if cursor.rowcount != 1:
                 return False
             await self._note(conn, dispute_id, f"customer service follow-up done by {reviewer_id}: {note}")
             return True
+
+    async def human_labels(self, limit=500):
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT f.dispute_id, f.kind, f.reason, f.resolved_by, f.resolved_at, f.note, f.human_verdict, "
+                "d.transaction_id, to_jsonb(j) - 'dispute_id' AS judgement FROM dispute_follow_ups f "
+                "JOIN disputes d USING (dispute_id) LEFT JOIN dispute_judgements j USING (dispute_id) "
+                "WHERE f.human_verdict IS NOT NULL ORDER BY f.resolved_at DESC LIMIT %s", (limit,))
+            return await cursor.fetchall()
 
     async def save_judgement(self, dispute_id, result, *, passed, prompt_version):
         from psycopg.types.json import Jsonb

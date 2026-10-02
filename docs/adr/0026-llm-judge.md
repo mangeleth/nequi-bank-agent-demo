@@ -36,6 +36,15 @@ person who reviews the dispute.
   judge's reasons and what the customer was told. The dispute keeps its status and its money;
   the human agents decide what to do, and record a note when it is handled. The judge's false
   alarms (about 6% on the calibration set) cost a person's time, never a customer's money.
+- **People's re-assessments are human labels for the judge.** In customer service, a person
+  answers the same three questions as the judge, **before** seeing the judge's verdict (to avoid
+  anchoring), and adds a note. Their answers are stored next to the judge's verdict and the exact
+  case the judge saw (`dispute_follow_ups.human_verdict`, `GET /v1/reviews/human-labels`), and
+  the dashboard compares them: confirmed failures, **false alarms** (judge FAIL, person PASS) and
+  **unsafe passes** (judge PASS, person FAIL). `make judge-labels-export` writes them in the
+  calibration format, to be reviewed and added to the calibration set.
+- **Control samples.** If people only saw what the judge flags, its unsafe passes would never be
+  found. A random 10% of its passes (`JUDGE_CONTROL_SAMPLE`) is sent to customer service too.
 - **Customer service's check is internal validation.** It is recorded (the follow-up queue and the
   audit trail, both visible only to reviewers) but never shown to the customer: their outcome
   stays as it was (for example "approved" or "paid", with the reviewer who approved it), and the
