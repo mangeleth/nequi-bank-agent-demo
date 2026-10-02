@@ -134,7 +134,7 @@ Planned steps:
   run's trace drawn inside the page from Langfuse (ADR-0025).
 - Later, if needed: HTTPS with a certificate.
 
-## Milestone 8: the three-tier defensive barrier
+## Milestone 8: the three-tier defensive barrier, the LLM judge, and human review
 
 Resilience in a multi-agent system needs three layers. All three exist today; Milestone 8 runs
 them automatically on every change.
@@ -153,6 +153,17 @@ $0.0143 per success.
 Still to do in Milestone 8: run the unit tests and the evaluation in GitHub Actions as required
 checks; more scenarios, including conflicting and stale evidence (`docs/LEARNINGS.md`, Part 2,
 entry C); several runs per scenario to measure decision agreement.
+
+**Done in Milestone 8:**
+- The LLM judge (ADR-0026): rubric, calibration against labelled cases with tuning and held-out
+  splits (v1 to v3: held-out groundedness 5 of 5), running in the background on every finished
+  dispute, judging against the records as of when the explanation was written.
+- Human review (ADR-0027): a reviewer's queue, evidence, judge verdict and audit trail; approve
+  pays the ledger's amount through the same payer; reject; decided once.
+- In the UI: the reviewer tab, and the judge's health on the dashboard.
+
+Still to do: CI (#16), more scenarios (#6, #7), several runs per scenario (consistency),
+prompt-injection detection (#19, critical).
 
 **A background LLM judge** ([#10](https://github.com/mangeleth/nequi-bank-agent-demo/issues/10)). Deterministic checks cannot tell whether an
 explanation is supported by the evidence, so every finished triage is also judged:

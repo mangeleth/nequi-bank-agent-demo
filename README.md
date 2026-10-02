@@ -440,8 +440,13 @@ A Streamlit app ([ADR-0023](docs/adr/0023-demo-ui.md)), deployed to AKS.
   page**: every step in order, a timeline, model and tool calls, tokens, cost, and each step's
   input and output ([ADR-0025](docs/adr/0025-ui-style-and-traces.md)). Both show the refund
   policy's checks and the ledger's refund ID.
+- **👤 Revisión (supervisor):** act as a bank reviewer: the queue of disputes waiting for a person,
+  why each one got there, its evidence, policy checks, and the LLM judge's verdict; approve (pays
+  what the ledger shows owed, through the same payer) or reject, with a required reason
+  ([ADR-0027](docs/adr/0027-human-review.md)).
 - **📊 Evaluation dashboard:** evaluated requests, successful requests, success rate, total cost,
-  and cost per success, per evaluation run over time.
+  and cost per success, per evaluation run over time; and the LLM judge's health: agreement and
+  unsafe passes against labelled answers, per prompt version ([ADR-0026](docs/adr/0026-llm-judge.md)).
 - **🗺️ Demo script:** the scenarios to show live, in order ([docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md)).
 
 The UI uses the system only as a customer's app would: the intake API, with a login token. It

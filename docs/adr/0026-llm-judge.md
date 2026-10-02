@@ -34,6 +34,26 @@ person who reviews the dispute.
 - The judge is the same model family as the candidates (gpt-4o, temperature 0). Same-family judges
   can share blind spots (see the production delta).
 
+- **In the background** (`services/judge/worker.py`): when a triage finishes with a model-written
+  explanation, the triage worker adds a job to a Redis stream (`judge-jobs`, consumer group
+  `judges`); the judge worker grades it and stores the verdict in `dispute_judgements`. A job not
+  acknowledged is reclaimed after a minute; after 3 attempts the dispute is recorded as "could not
+  be judged". Queuing never affects the dispute. The judge worker has its own identity (the model
+  and the database password) and no Service.
+- **Evidence as of when the explanation was written.** The judge usually runs after the refund was
+  paid; the ledger then says `reversed`. A refund paid after the explanation is taken back out of
+  the evidence by code, and the evidence says only which moment it describes, never what happened
+  later (see "Found on the cluster").
+
+## Found on the cluster
+The first real verdict failed a correct explanation: the judge read the ledger after the refund
+(`reversed`) and called "it failed, nothing arrived" wrong. Fix 1: rebuild the transaction as of
+when the explanation was written. The next verdict still failed it, because the evidence note
+named the later refund and the judge read "refund recommended" as contradicting "already paid".
+Fix 2: describe only the moment. Then all three criteria passed, with reasons matching the records
+the agents saw. Two lessons: evidence must be from the same moment as what is judged, and nothing
+from later may leak into it.
+
 ## Calibration history
 | Prompt | Tuning: agreement / unsafe passes | Held-out: agreement / unsafe passes | What changed |
 |---|---|---|---|
