@@ -126,7 +126,8 @@ async def test_a_worker_that_dies_mid_run_is_replaced_by_redelivery():
 
     async with Supervisor(queue=queue, store=store, specialists=DiesOnce(), script=RETRY_SCRIPT) as sup:
         dispute_id = (await sup.post()).json()["dispute_id"]
-        await died.wait()
+        # Bounded: if the run fails before reaching the ledger, fail here instead of hanging.
+        await asyncio.wait_for(died.wait(), timeout=10)
         assert (await sup.get(dispute_id)).json()["execution_status"] == "running"
 
         await queue.expire_locks()  # what the real queue does when the lock runs out

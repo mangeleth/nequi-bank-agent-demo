@@ -68,7 +68,7 @@ async def pay_approved(store: DisputeStore, specialists: Specialists, record: Di
     settled = result.model_copy(update={
         "status": DisputeStatus.REFUND_PAID,
         "payment": payment,
-        "customer_message": paid_message(result.ledger, payment),
+        "customer_message": _with_incident(result, paid_message(result.ledger, payment)),
         "steps": [*result.steps, f"pay: {payment.amount} {payment.currency} paid as {payment.refund_id}"],
     })
     await store.settle(record.dispute_id, expected=DisputeStatus.REFUND_APPROVED, result=settled,
@@ -81,10 +81,18 @@ async def to_a_person(store: DisputeStore, record: DisputeRecord, *, reason: str
     settled = result.model_copy(update={
         "status": DisputeStatus.PENDING_HUMAN_APPROVAL,
         "escalation_reason": reason,
-        "customer_message": payment_needs_person_message(result.ledger),
+        "customer_message": _with_incident(result, payment_needs_person_message(result.ledger)),
         "steps": [*result.steps, step],
     })
     await store.settle(record.dispute_id, expected=DisputeStatus.REFUND_APPROVED, result=settled, note=note)
+
+
+def _with_incident(result: TriageResult, message: str) -> str:
+    if result.incident is None:
+        return message
+    from services.supervisor.incident_path import with_incident
+
+    return with_incident(message, result.incident)
 
 
 class Pace:

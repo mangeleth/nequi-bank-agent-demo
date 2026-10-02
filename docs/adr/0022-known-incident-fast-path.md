@@ -1,6 +1,6 @@
 # ADR-0022: Disputes covered by a confirmed incident are decided by code, without a model
 
-- **Status:** In progress (part 1 of 4: the incident registry)
+- **Status:** In progress (parts 1 and 2 of 4: the registry and the check)
 - **Date:** 2026-10-02
 - **Milestone:** M6 (Step 12)
 
@@ -30,8 +30,29 @@ deterministic rule, then an agent for what remains ambiguous.
   columns are added and backfilled, missing rows are inserted, and existing state (a refund
   already paid) is not changed.
 
+- **The check runs in the worker, before the graph** (`services/supervisor/incident_path.py`),
+  not in the intake API. The intake API is the customer-facing part and only stores and queues
+  (ADR-0018); an incident is exactly the kind of burst the queue absorbs. It is still zero model
+  calls, and no delegated token is issued.
+- **It removes the investigation, not the controls.** A covered dispute goes through the same
+  `evaluate()` as every other one. Only where three inputs come from changes:
+
+  | Policy input | Normal path | Covered by an incident |
+  |---|---|---|
+  | Ledger figures | Ledger Agent (a model) | Core Banking, read by code |
+  | Fraud risk | Fraud Agent (a model) | The risk engine's own score, read by code |
+  | Recommendation | The supervisor model | Code, citing the incident; the amount is the ledger's |
+  | Refund history | Code | Code |
+
+  So the kill switch, the amount limit, the risk check, and the 30-day limits still apply; a test
+  covers each.
+- Covered but nothing owed (already refunded): closed without paying.
+- The customer is told what is established: *"This transfer was affected by a confirmed problem
+  on our side: <incident title>."*, then the usual message.
+- If Core Systems does not answer the incident check, the delivery is retried. An outage is never
+  read as "not covered", which would quietly spend model calls during an incident.
+
 ## Still to do
-2. The check at the gate: a covered dispute is decided without calling a model.
 3. The batch refund job for every covered transaction, including undisputed ones.
 4. An evaluation scenario proving zero model calls, and the deploy.
 

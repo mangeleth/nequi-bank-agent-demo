@@ -221,6 +221,15 @@ class RefundApproval(Contract):
         return DisputeStatus.PENDING_HUMAN_APPROVAL
 
 
+class KnownIncident(Contract):
+    """A confirmed platform incident that covers the disputed transaction (ADR-0022). When one
+    exists, the dispute is decided by code: there is nothing left to investigate."""
+
+    incident_id: Annotated[str, Field(pattern=r"^INC-[0-9]{8}-[0-9]{2}$")]
+    title: str = Field(min_length=1, max_length=200)
+    confirmed_by: str = Field(min_length=1, max_length=100)
+
+
 class RefundPayment(Contract):
     """The ledger's confirmation that an approved refund was paid. Copied from the ledger's
     answer; the refund exists in the ledger under `refund_id`."""
@@ -244,6 +253,7 @@ class TriageResult(Contract):
     verdict: DisputeVerdict | None = None  # the LLM's recommendation, if one was reached
     approval: RefundApproval | None = None  # the deterministic policy decision, for refunds
     payment: RefundPayment | None = None  # set once the ledger confirms the refund was paid
+    incident: KnownIncident | None = None  # set when a confirmed incident decided it, without a model
     fraud: FraudAssessment | None = None
     ledger: LedgerReconciliation | None = None
     customer_message: str  # chosen by code from established facts; never model-written text

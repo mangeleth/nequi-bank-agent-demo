@@ -149,3 +149,30 @@ async def test_a_confirmation_for_a_different_refund_is_not_trusted(reply):
     client = specialists(lambda request: httpx.Response(201, json=confirmation))
     with pytest.raises(SpecialistUnavailable):
         await client.pay_refund("user-1001", DISPUTE.transaction_id, Decimal("50000.00"), "dispute:mine")
+
+
+# --- The fast path's code-only reads, through the REAL Core Systems app (ADR-0022) ---------------
+
+
+async def test_incident_ledger_and_risk_reads_against_the_real_core_systems(monkeypatch):
+    monkeypatch.setenv("CORE_SYSTEMS_BACKEND", "in_memory")
+    core_app, client = real_core_specialists()
+    customer = CallerIdentity(user_id="user-1002", token_id="t", expires_at=datetime.now(UTC))
+    async with core_app.router.lifespan_context(core_app):
+        incident = await client.known_incident(customer, "TX-20261001000009")
+        not_covered = await client.known_incident(customer, "TX-20261001000011")  # after the window
+        ledger = await client.ledger_record(customer, "TX-20261001000009")
+        risk = await client.risk_engine(customer, "TX-20261001000009")
+
+    assert (incident.incident_id, incident.confirmed_by) == ("INC-20261001-01", "operations-lead (demo)")
+    assert not_covered is None
+    assert (ledger.settlement_status, ledger.discrepancy) == ("failed", Decimal("35000.00"))
+    assert "INTERBANK_TIMEOUT" in ledger.summary
+    assert (risk.risk_score, risk.risk_level) == (0.09, "low")
+
+
+async def test_core_systems_down_during_the_incident_check_is_unavailable_not_uncovered():
+    # A 503 must NOT read as "no incident": that would quietly send the dispute to the agents.
+    client = specialists(lambda request: httpx.Response(503, text="down"))
+    with pytest.raises(SpecialistUnavailable):
+        await client.known_incident(CALLER, DISPUTE.transaction_id)

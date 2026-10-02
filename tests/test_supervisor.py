@@ -19,7 +19,7 @@ from services.supervisor.payments import REFUND_MAX_DELIVERIES
 from services.supervisor.store import InMemoryDisputeStore
 from shared.auth import verify_token
 from shared.refund_policy import CustomerRefundHistory, RefundPolicyConfig
-from shared.schemas import FraudAssessment, LedgerReconciliation, RefundPayment
+from shared.schemas import FraudAssessment, KnownIncident, LedgerReconciliation, RefundPayment
 from shared.tracing import Tracing
 from tests.fakes import ScriptedChatModel, ai
 from tests.fakes import tool_call as call
@@ -36,7 +36,7 @@ class FakeSpecialists:
 
     def __init__(self, *, status="failed", debited="50000.00", credited="0.00", risk=(0.08, "low"),
                  fraud_failures=0, ledger_failures=0, history=(0, "0"), history_down=False, owns=True,
-                 pay="paid", pay_failures=0):
+                 pay="paid", pay_failures=0, incident=None):
         self.ledger = LedgerReconciliation(transaction_id=TX, settlement_status=status, debited_amount=debited,
                                            credited_amount=credited, summary="From the ledger.")
         self.fraud = FraudAssessment(transaction_id=TX, risk_score=risk[0], risk_level=risk[1], rationale="Signals.")
@@ -50,6 +50,9 @@ class FakeSpecialists:
         self.pay, self.pay_failures = pay, pay_failures
         self.pay_calls: list[tuple[str, str, Decimal, str]] = []
         self.paid: dict[str, RefundPayment] = {}  # idempotency key -> refund, as the ledger keeps it
+        # Core Systems' incident registry and the code-only reads used by the fast path (ADR-0022)
+        self.incident = incident
+        self.direct_reads: list[str] = []
 
     async def owns_transaction(self, caller, transaction_id):
         return self.owns
@@ -72,6 +75,18 @@ class FakeSpecialists:
         if self.history_down:
             raise SpecialistUnavailable("HTTP 503 from core systems")
         return self.history
+
+    async def known_incident(self, caller, transaction_id):
+        self.direct_reads.append("incident")
+        return self.incident
+
+    async def ledger_record(self, caller, transaction_id):
+        self.direct_reads.append("ledger")
+        return self.ledger
+
+    async def risk_engine(self, caller, transaction_id):
+        self.direct_reads.append("risk")
+        return self.fraud
 
     async def pay_refund(self, user_id, transaction_id, amount, idempotency_key):
         self.pay_calls.append((user_id, transaction_id, amount, idempotency_key))
@@ -132,8 +147,9 @@ def triage(script, specialists=None, headers=None, **app_options):
     """
     model = ScriptedChatModel(script=script)
     specialists = specialists or FakeSpecialists()
+    policy = app_options.pop("policy", None) or RefundPolicyConfig()
     app = create_app(auth=SETTINGS, model=model, specialists=specialists, tracing=Tracing(),
-                     policy=RefundPolicyConfig(), gate=InMemoryGate(), store=InMemoryDisputeStore(),
+                     policy=policy, gate=InMemoryGate(), store=InMemoryDisputeStore(),
                      signer=SIGNER, delegation=DELEGATION, retry_delay_seconds=0, **app_options)
     auth_headers = bearer("user-1001") if headers is None else headers
     with TestClient(app) as client:
@@ -399,3 +415,73 @@ def test_a_payment_still_unknown_after_the_last_delivery_goes_to_a_person():
     reason = outcome.json()["escalation_reason"]
     assert "did not answer" in reason and f"dispute:{outcome.view['dispute_id']}" in reason  # where to look
     assert "has been paid" not in outcome.view["customer_message"]
+
+
+# --- Known-incident fast path (ADR-0022) ---------------------------------------------------------
+
+ANDINO = KnownIncident(incident_id="INC-20261001-01", title="Interbank transfers to Banco Andino timed out",
+                       confirmed_by="operations-lead (demo)")
+
+
+def covered(**specialists) -> FakeSpecialists:
+    return FakeSpecialists(incident=ANDINO, **specialists)
+
+
+def no_model_was_used(model, specialists) -> bool:
+    return model.seen == [] and specialists.ledger_calls == specialists.fraud_calls == 0 \
+        and specialists.tokens_received == []
+
+
+def test_a_covered_dispute_is_decided_and_paid_with_zero_model_calls():
+    outcome, model, specialists = triage([], covered())  # an empty script: any model call would fail
+    body = outcome.json()
+
+    assert no_model_was_used(model, specialists)
+    assert specialists.direct_reads == ["incident", "ledger", "risk"]  # read by code, not by agents
+    assert outcome.view["status"] == "refund_paid"
+    assert body["incident"]["incident_id"] == "INC-20261001-01"
+    assert (body["approval"]["route"], body["approval"]["approved_amount"]) == ("auto_approved", "50000.00")
+    assert body["steps"][0].startswith("incident: INC-20261001-01 covers")
+    assert body["trace_url"] is None  # no model run, so nothing to trace
+    assert outcome.view["customer_message"].startswith(
+        "This transfer was affected by a confirmed problem on our side: Interbank transfers to Banco Andino timed out.")
+    assert outcome.view["customer_message"].endswith("has been paid back to your account.")
+
+
+@pytest.mark.parametrize(("specialists", "policy", "failed_check"), [
+    ({"debited": "450000.00"}, None, "under_amount_limit"),  # an incident does not lift the amount limit
+    ({}, RefundPolicyConfig(enabled=False), "auto_refund_enabled"),  # nor the kill switch
+    ({"risk": (0.86, "high")}, None, "fraud_risk_low"),  # nor the risk engine's score
+    ({"history": (3, "60000.00")}, None, "under_refund_count_limit"),  # nor the 30-day limits
+])
+def test_a_covered_dispute_still_passes_through_the_same_refund_policy(specialists, policy, failed_check):
+    outcome, model, fake = triage([], covered(**specialists), policy=policy)
+    body = outcome.json()
+
+    assert no_model_was_used(model, fake)
+    assert outcome.view["status"] == "pending_human_approval"
+    assert body["approval"]["route"] == "human_required"
+    assert failed_check in failed_checks(body)
+    assert fake.pay_calls == []
+
+
+def test_a_covered_transaction_already_refunded_is_closed_without_paying():
+    outcome, model, specialists = triage([], covered(status="reversed", credited="50000.00"))
+    assert no_model_was_used(model, specialists)
+    assert outcome.view["status"] == "closed_no_refund"
+    assert specialists.direct_reads == ["incident", "ledger"]  # no risk read: nothing to decide
+    assert specialists.pay_calls == []
+
+
+def test_a_covered_dispute_fails_closed_without_the_refund_history():
+    outcome, model, specialists = triage([], covered(history_down=True))
+    assert no_model_was_used(model, specialists)
+    assert outcome.view["status"] == "pending_human_approval"
+    assert "refund history was unavailable" in outcome.json()["escalation_reason"]
+
+
+def test_a_dispute_no_incident_covers_goes_through_the_agents():
+    outcome, model, specialists = triage(HAPPY)
+    assert specialists.direct_reads == ["incident"]  # checked, not covered
+    assert len(model.seen) == len(HAPPY) and specialists.ledger_calls == specialists.fraud_calls == 1
+    assert outcome.json()["incident"] is None

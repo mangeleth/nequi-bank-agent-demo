@@ -15,7 +15,14 @@ from pydantic import BaseModel, ValidationError
 
 from shared.auth import CallerIdentity
 from shared.refund_policy import CustomerRefundHistory
-from shared.schemas import DisputeRequest, FraudAssessment, LedgerReconciliation, RefundPayment
+from shared.schemas import (
+    DisputeRequest,
+    FraudAssessment,
+    KnownIncident,
+    LedgerReconciliation,
+    RefundPayment,
+    RiskLevel,
+)
 from shared.tracing import TRACEPARENT_HEADER
 
 
@@ -68,6 +75,15 @@ class Specialists(Protocol):
     ) -> LedgerReconciliation: ...
 
     async def refund_history(self, caller: CallerIdentity, window_days: int) -> CustomerRefundHistory: ...
+
+    async def known_incident(self, caller: CallerIdentity, transaction_id: str) -> KnownIncident | None:
+        """The confirmed incident covering this transaction, or None (ADR-0022)."""
+
+    async def ledger_record(self, caller: CallerIdentity, transaction_id: str) -> LedgerReconciliation:
+        """The ledger's figures, read directly by code: no agent, no model."""
+
+    async def risk_engine(self, caller: CallerIdentity, transaction_id: str) -> FraudAssessment:
+        """The risk engine's own score, read directly by code: no agent, no model."""
 
     async def pay_refund(
         self, user_id: str, transaction_id: str, amount: Decimal, idempotency_key: str
@@ -139,6 +155,55 @@ class HttpSpecialists:
             )
         except (ValueError, KeyError, TypeError, ArithmeticError) as exc:
             raise SpecialistUnavailable("malformed refund history from core systems") from exc
+
+    async def _core_json(self, caller: CallerIdentity, path: str) -> dict | None:
+        """GET a Core Systems resource: the body, None on 404, SpecialistUnavailable otherwise."""
+        response = await self._core_get(caller, path)
+        if response.status_code == 404:
+            return None
+        if response.status_code != 200:
+            raise SpecialistUnavailable(f"HTTP {response.status_code} from core systems")
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise SpecialistUnavailable("malformed answer from core systems") from exc
+
+    async def known_incident(self, caller: CallerIdentity, transaction_id: str) -> KnownIncident | None:
+        body = await self._core_json(caller, f"/v1/incidents/covering/{transaction_id}")
+        if body is None:
+            return None
+        try:
+            return KnownIncident(incident_id=body["incident_id"], title=body["title"],
+                                 confirmed_by=body["confirmed_by"])
+        except (KeyError, TypeError, ValidationError) as exc:
+            raise SpecialistUnavailable("malformed incident from core systems") from exc
+
+    async def ledger_record(self, caller: CallerIdentity, transaction_id: str) -> LedgerReconciliation:
+        tx = await self._core_json(caller, f"/v1/core-banking/transactions/{transaction_id}")
+        if tx is None:
+            raise SpecialistUnavailable("transaction not found in the ledger")
+        try:
+            return LedgerReconciliation(
+                transaction_id=tx["transaction_id"], settlement_status=tx["settlement_status"],
+                debited_amount=tx["debited_amount"], credited_amount=tx["credited_amount"], currency=tx["currency"],
+                summary=(f"Read directly from Core Banking: {tx['settlement_status']}, "
+                         f"{tx['debited_amount']} debited, {tx['credited_amount']} credited, "
+                         f"failure code {tx.get('failure_code') or 'none'}."))
+        except (KeyError, TypeError, ValidationError) as exc:
+            raise SpecialistUnavailable("malformed transaction from core systems") from exc
+
+    async def risk_engine(self, caller: CallerIdentity, transaction_id: str) -> FraudAssessment:
+        signals = await self._core_json(caller, f"/v1/risk/transactions/{transaction_id}/signals")
+        if signals is None:
+            raise SpecialistUnavailable("no risk signals for the transaction")
+        try:
+            score = float(signals["engine_score"])
+            level = RiskLevel.LOW if score < 0.4 else RiskLevel.MEDIUM if score < 0.7 else RiskLevel.HIGH
+            return FraudAssessment(transaction_id=transaction_id, risk_score=score, risk_level=level,
+                                   signals=[f"risk engine score {score}"],
+                                   rationale="The risk engine's own score, read by code; no model interpreted it.")
+        except (KeyError, TypeError, ValueError, ValidationError) as exc:
+            raise SpecialistUnavailable("malformed risk signals from core systems") from exc
 
     async def pay_refund(
         self, user_id: str, transaction_id: str, amount: Decimal, idempotency_key: str

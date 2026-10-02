@@ -15,6 +15,7 @@ from shared.schemas import (
     DisputeVerdict,
     LedgerReconciliation,
     RefundApproval,
+    KnownIncident,
     RefundPayment,
     SettlementStatus,
 )
@@ -82,3 +83,8 @@ def paid_message(ledger: LedgerReconciliation | None, payment: RefundPayment) ->
 
 def payment_needs_person_message(ledger: LedgerReconciliation | None) -> str:
     return f"{_records(ledger)} {PAYMENT_NEEDS_PERSON}" if ledger is not None else PAYMENT_NEEDS_PERSON
+
+
+def incident_sentence(incident: KnownIncident) -> str:
+    """Said only when operations confirmed the incident (ADR-0022); its title is a fact."""
+    return f"This transfer was affected by a confirmed problem on our side: {incident.title.rstrip('.')}."

@@ -37,6 +37,7 @@ from langgraph.errors import GraphRecursionError
 
 from services.supervisor.clients import Specialists
 from services.supervisor.graph import RECURSION_LIMIT, TriageContext, TriageState
+from services.supervisor.incident_path import decide_known_incident, with_incident
 from services.supervisor.messages import INVESTIGATING, NEEDS_PERSON, customer_message
 from services.supervisor.queue import MAX_DELIVERIES, Delivery, DisputeQueue
 from services.supervisor.store import DisputeRecord, DisputeStore
@@ -114,15 +115,25 @@ class TriageRunner:
 
     async def run_graph(self, record: DisputeRecord) -> TriageResult:
         dispute = DisputeRequest.model_validate(record.request)
+        identity = CallerIdentity(
+            user_id=record.user_id, token_id=f"dispute-{record.dispute_id}",
+            expires_at=datetime.now(UTC) + timedelta(seconds=self.delegation.lifetime_seconds),
+        )
+        # A confirmed incident already explains this transaction? Then there is nothing to
+        # investigate: decide by code, with zero model calls (ADR-0022).
+        known = await decide_known_incident(self.specialists, identity, record.dispute_id, dispute, self.policy)
+        if known is not None:
+            incident, state = known
+            log.info("dispute %s decided by incident %s without a model", record.dispute_id, incident.incident_id)
+            result = build_result(record.dispute_id, dispute, state, trace_url=None)
+            return result.model_copy(update={"incident": incident,
+                                             "customer_message": with_incident(result.customer_message, incident)})
+
         # The customer was verified at submission. The agents get our own token for this
         # customer and this transaction; no customer login token exists here at all.
         token = await issue_delegated_token(
             self.signer, self.delegation, user_id=record.user_id,
             transaction_id=dispute.transaction_id, dispute_id=str(record.dispute_id),
-        )
-        identity = CallerIdentity(
-            user_id=record.user_id, token_id=f"dispute-{record.dispute_id}",
-            expires_at=datetime.now(UTC) + timedelta(seconds=self.delegation.lifetime_seconds),
         )
         callbacks, trace_id = self.tracing.start()
         config = {
