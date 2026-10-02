@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token run-core run-fraud run-ledger run-supervisor wi-create jwt-publish smoke-fraud smoke-ledger test guard-clean build push deploy smoke release
+.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage test guard-clean build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -162,6 +162,18 @@ wi-create:
 		--subject system:serviceaccount:$(K8S_NAMESPACE):$(SERVICE) \
 		--audiences api://AzureADTokenExchange
 
+## Let a service's identity read specific Key Vault secrets: read-only, and only those secrets.
+## Usage: make kv-grant SERVICE=supervisor SECRETS="langfuse-public-key langfuse-secret-key"
+kv-grant:
+	@for secret in $(SECRETS); do \
+		echo "granting id-$(SERVICE) read access to $$secret"; \
+		az role assignment create -o none \
+			--assignee-object-id $$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) --query principalId -o tsv) \
+			--assignee-principal-type ServicePrincipal \
+			--role "Key Vault Secrets User" \
+			--scope $$(az keyvault show -n $(KEYVAULT_NAME) --query id -o tsv)/secrets/$$secret; \
+	done
+
 ## Publish the demo identity provider's PUBLIC key to the cluster (it verifies tokens; not a secret)
 jwt-publish:
 	@test -f .local/jwt-public.pem || .venv/bin/python scripts/demo_token.py user-1001 >/dev/null
@@ -172,6 +184,7 @@ jwt-publish:
 # Local development: run each in its own terminal, then call the agent with a demo token
 # ---------------------------------------------------------------------------------------------
 USER_ID ?= user-1001
+TX ?= TX-20261001000001
 
 ## Print a 15-minute login token for a synthetic customer (creates .local/ keys on first use)
 demo-token:
@@ -218,7 +231,8 @@ deploy:
 	kubectl apply -f k8s/namespace.yaml
 	cat k8s/$(SERVICE)/*.yaml \
 		| IMAGE=$(IMAGE) WI_CLIENT_ID=$$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) --query clientId -o tsv 2>/dev/null) \
-		  envsubst '$$IMAGE $$WI_CLIENT_ID $$AOAI_NAME $$AOAI_DEPLOYMENT $$AOAI_API_VERSION $$JWT_ISSUER $$JWT_AUDIENCE' \
+		  AZURE_TENANT_ID=$$(az account show --query tenantId -o tsv) \
+		  envsubst '$$IMAGE $$WI_CLIENT_ID $$AZURE_TENANT_ID $$KEYVAULT_NAME $$AOAI_NAME $$AOAI_DEPLOYMENT $$AOAI_API_VERSION $$JWT_ISSUER $$JWT_AUDIENCE $$LANGFUSE_BASE_URL' \
 		| kubectl apply -f -
 	kubectl rollout status deployment/$(SERVICE) -n $(K8S_NAMESPACE) --timeout=180s
 
@@ -240,6 +254,13 @@ smoke-ledger:
 		-H "Authorization: Bearer $$(.venv/bin/python scripts/demo_token.py $(USER_ID))" \
 		-H "Content-Type: application/json" \
 		-d '{"transaction_id":"TX-20261001000001","reason":"failed_transfer","claimed_amount":"50000.00"}'
+
+## End-to-end check of the whole system through the deployed supervisor
+smoke-triage:
+	scripts/smoke.sh $(K8S_NAMESPACE) http://supervisor/v1/disputes/triage \
+		-H "Authorization: Bearer $$(.venv/bin/python scripts/demo_token.py $(USER_ID))" \
+		-H "Content-Type: application/json" \
+		-d '{"transaction_id":"$(TX)","reason":"failed_transfer","claimed_amount":"50000.00"}'
 
 ## Full pipeline: clean tree -> tests -> build -> push -> deploy -> smoke
 release: guard-clean test build push deploy smoke
