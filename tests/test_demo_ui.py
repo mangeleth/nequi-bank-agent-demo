@@ -146,7 +146,7 @@ def test_the_streamlit_page_renders_with_the_real_reports(monkeypatch):
 
     assert not page.exception
     assert [tab.label for tab in page.tabs] == ["📱 App del cliente", "👤 Revisión (supervisor)",
-                                                "📊 Tablero de evaluación", "🗺️ Guion de la demo"]
+                                                "📊 Tablero de evaluación"]  # no demo script (#18)
     assert any("La revisión no está disponible" in w.value for w in page.warning)  # no API here: no crash
     metrics = {m.label: m.value for m in page.metric}
     assert {"Solicitudes evaluadas", "Solicitudes exitosas", "Tasa de éxito", "Costo total", "Costo por éxito"} <= set(metrics)

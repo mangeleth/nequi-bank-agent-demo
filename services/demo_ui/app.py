@@ -1,5 +1,6 @@
-"""Demo UI (Milestone 7, ADR-0023): the customer's app, the evaluation dashboard, and the demo
-script, in one Streamlit page. Every decision lives in `logic.py`; this file only lays it out.
+"""Demo UI (Milestone 7, ADR-0023): the customer's app, the reviewer's tab (ADR-0027), and the
+evaluation dashboard, in one Streamlit page. Every decision lives in `logic.py`; this file only
+lays it out. The demo script is for the presenter only (docs/DEMO_SCRIPT.md), not on the page.
 
 The interface is in Spanish (ADR-0025). What the system itself produced is shown as it is: the
 customer message, the steps taken, the trace's steps, and the models' inputs and outputs.
@@ -18,7 +19,6 @@ from services.demo_ui import logic
 
 SUPERVISOR_URL = os.environ.get("SUPERVISOR_URL", "http://127.0.0.1:8004")
 RESULTS_DIR = Path(os.environ.get("EVAL_RESULTS_DIR", "evals/results"))
-DEMO_SCRIPT = Path(os.environ.get("DEMO_SCRIPT_FILE", "docs/DEMO_SCRIPT.md"))
 POLL_SECONDS, FOLLOW_SECONDS = 0.5, 120
 MAGENTA, DARK = "#DA0081", "#200020"
 
@@ -393,17 +393,6 @@ def judge_health() -> None:
                                    for j in recent]), hide_index=True, width="stretch")
 
 
-# --- 3. The demo script ---------------------------------------------------------------------------
-
-
-def script_tab() -> None:
-    st.caption("El guion de la demostración, tal como está en el repositorio (docs/DEMO_SCRIPT.md, en inglés).")
-    if DEMO_SCRIPT.exists():
-        st.markdown(DEMO_SCRIPT.read_text())
-    else:
-        st.info("docs/DEMO_SCRIPT.md no está en esta imagen.")
-
-
 HEADER = """
 <div style="background:#200020;border-radius:1.25rem;padding:1.4rem 1.6rem;margin-bottom:0.8rem">
   <div style="color:#DA0081;font-weight:800;letter-spacing:.08em;font-size:.8rem">REVISIÓN DE DISPUTAS CON IA · DEMO EN VIVO</div>
@@ -418,13 +407,10 @@ st.caption("Demo independiente para una entrevista: no es un producto de Nequi n
            "clientes y datos sintéticos; nunca ingreses datos personales o bancarios reales. Cada cliente y "
            "transferencia se revisa una sola vez hasta que se reinicia la demo; si la envías de nuevo, verás la "
            "disputa existente, sin costo.")
-customer, reviewer_tab, dashboard, script = st.tabs(
-    ["📱 App del cliente", "👤 Revisión (supervisor)", "📊 Tablero de evaluación", "🗺️ Guion de la demo"])
+customer, reviewer_tab, dashboard = st.tabs(["📱 App del cliente", "👤 Revisión (supervisor)", "📊 Tablero de evaluación"])
 with customer:
     customer_tab()
 with reviewer_tab:
     review_tab()
 with dashboard:
     dashboard_tab()
-with script:
-    script_tab()

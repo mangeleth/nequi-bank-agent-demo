@@ -447,7 +447,8 @@ A Streamlit app ([ADR-0023](docs/adr/0023-demo-ui.md)), deployed to AKS.
 - **📊 Evaluation dashboard:** evaluated requests, successful requests, success rate, total cost,
   and cost per success, per evaluation run over time; and the LLM judge's health: agreement and
   unsafe passes against labelled answers, per prompt version ([ADR-0026](docs/adr/0026-llm-judge.md)).
-- **🗺️ Demo script:** the scenarios to show live, in order ([docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md)).
+
+The scenarios to show live, in order, are for the presenter: [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md).
 
 The UI uses the system only as a customer's app would: the intake API, with a login token. It
 cannot reach the queues, the database, the model, or Core Systems.

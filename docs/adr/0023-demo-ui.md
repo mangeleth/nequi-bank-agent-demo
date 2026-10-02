@@ -10,8 +10,9 @@ customers, watch their status change, see how each was decided (agents, or a con
 with no model), and show the evaluation numbers. It must not become a back door into the system.
 
 ## Decision
-- **Streamlit, one page, three tabs:** the customer's app (two disputes side by side, for the
-  covered vs. not-covered comparison), the evaluation dashboard, and the demo script.
+- **Streamlit, one page:** the customer's app (two disputes side by side, for the covered vs.
+  not-covered comparison), the reviewer's tab (ADR-0027), and the evaluation dashboard. The demo
+  script is for the presenter only: `docs/DEMO_SCRIPT.md`, not shown on the public page (#18).
 - **It uses only the intake API**, exactly as a customer's app would: `POST /v1/disputes` and
   `GET /v1/disputes/{id}`. It has no access to the queues, the database, the model, or Core
   Systems. Its identity, `id-demo-ui`, may read one Key Vault secret and nothing else.
