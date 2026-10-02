@@ -68,7 +68,10 @@ transactions failed, an agent has nothing to investigate (`docs/LEARNINGS.md`, P
 Planned steps:
 - **Step 9 (done):** dispute store and deduplication key in the supervisor (`claim`,
   `complete`, `release`) on Redis, with tests for 10 simultaneous identical requests (ADR-0015).
-- **Step 10:** asynchronous intake: queue, worker, `202 Accepted`, and status endpoint.
+- **Step 10a (in progress):** PostgreSQL dispute records, two separate statuses, `202 Accepted`,
+  and a status endpoint; processing starts at once inside the supervisor.
+- **Step 10b:** the queue and a separate worker, with a short-lived internal token issued by
+  the supervisor on the customer's behalf (a customer's login token must not sit in a queue).
   Disputes are stored durably in **PostgreSQL** (a unique constraint on the dispute key; Redis
   stays in front as the fast path), with two separate statuses: an *execution status* for the
   run of the graph and a *business status* for the customer's dispute ([#12](https://github.com/mangeleth/nequi-bank-agent-demo/issues/12)).
@@ -108,9 +111,21 @@ $0.0143 per success.
 
 Still to do in Milestone 8: run the unit tests and the evaluation in GitHub Actions as required
 checks; more scenarios, including conflicting and stale evidence (`docs/LEARNINGS.md`, Part 2,
-entry C); several runs per scenario to measure decision agreement; an **LLM judge with the
-evidence and a rubric** for the explanations, calibrated against hand-labelled examples
-([#10](https://github.com/mangeleth/nequi-bank-agent-demo/issues/10)).
+entry C); several runs per scenario to measure decision agreement.
+
+**A background LLM judge** ([#10](https://github.com/mangeleth/nequi-bank-agent-demo/issues/10)). Deterministic checks cannot tell whether an
+explanation is supported by the evidence, so every finished triage is also judged:
+- When a run finishes, a judging job is put on a queue (a Redis stream).
+- A background worker takes the job and calls a judge model with the question, the candidate
+  answer, the tool evidence of that run, and a rubric: **groundedness** (every factual claim has
+  evidence), **completeness** (addresses the question or states what is unknown), **clarity**
+  (understandable; extra length earns no credit). The candidate text and the evidence are
+  treated as data, not instructions. The judge returns pass or fail per criterion with a brief
+  reason.
+- The verdict is stored in PostgreSQL next to the dispute, and the UI (Milestone 7) shows a
+  table of disputes with their judge results.
+- The judge runs after the customer has their answer: it measures quality and raises alerts;
+  it does not block or change a decision. It is calibrated against hand-labelled examples.
 
 ## Backlog (not scheduled)
 

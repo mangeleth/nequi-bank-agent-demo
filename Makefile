@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster redis-image dedup-reset test guard-clean build push deploy smoke release
+.PHONY: test-db venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster redis-image dedup-reset test guard-clean build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -12,6 +12,14 @@ venv:
 ## Run the unit tests
 test:
 	.venv/bin/python -m pytest -q
+
+## Run the tests, including the PostgreSQL store, against a throwaway PostgreSQL in Docker
+test-db:
+	@docker rm -f disputes-test-db >/dev/null 2>&1 || true
+	@docker run -d --rm --name disputes-test-db -e POSTGRES_PASSWORD=test -p 127.0.0.1:55432:5432 postgres:17-alpine >/dev/null
+	@for i in $$(seq 30); do docker exec disputes-test-db pg_isready -U postgres >/dev/null 2>&1 && break; sleep 1; done; sleep 1
+	@TEST_DATABASE_URL=postgresql://postgres:test@127.0.0.1:55432/postgres .venv/bin/python -m pytest -q; \
+		status=$$?; docker rm -f disputes-test-db >/dev/null; exit $$status
 
 ## Show the logged-in Azure account and active subscription
 az-check:

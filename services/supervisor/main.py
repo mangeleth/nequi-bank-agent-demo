@@ -41,10 +41,10 @@ def _status(state: TriageState) -> DisputeStatus:
     if state.get("escalation_reason"):
         return DisputeStatus.PENDING_HUMAN_APPROVAL  # human operations take over
     if (approval := state.get("approval")) is not None:
-        return approval.status  # resolved if auto-approved, otherwise pending a human
+        return approval.status  # refund approved, or pending a human
     verdict = state.get("verdict")
     if verdict is not None and verdict.decision == Decision.NO_ACTION:
-        return DisputeStatus.RESOLVED
+        return DisputeStatus.CLOSED_NO_REFUND
     return DisputeStatus.PENDING_HUMAN_APPROVAL  # escalate_fraud: fraud operations take over
 
 

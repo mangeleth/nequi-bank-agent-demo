@@ -11,7 +11,7 @@
     },
     "expected": {
       "http_status": 200,
-      "status": "resolved",
+      "status": "refund_approved",
       "decision": "refund_recommended",
       "policy_route": "auto_approved",
       "required_tool_calls": [
@@ -44,7 +44,7 @@
     },
     "expected": {
       "http_status": 200,
-      "status": "resolved",
+      "status": "refund_approved",
       "decision": "refund_recommended",
       "policy_route": "auto_approved",
       "required_tool_calls": [],
@@ -97,7 +97,7 @@
     },
     "expected": {
       "http_status": 200,
-      "status": "resolved",
+      "status": "closed_no_refund",
       "decision": "no_action",
       "policy_route": null,
       "required_tool_calls": [
@@ -157,7 +157,7 @@
     },
     "expected": {
       "http_status": 200,
-      "status": "resolved",
+      "status": "closed_no_refund",
       "decision": "no_action",
       "policy_route": null,
       "required_tool_calls": [
@@ -184,7 +184,7 @@
     },
     "expected": {
       "http_status": 200,
-      "status": "resolved",
+      "status": "closed_no_refund",
       "decision": "no_action",
       "policy_route": null,
       "required_tool_calls": [
@@ -244,7 +244,7 @@
     },
     "expected": {
       "http_status": 200,
-      "status": "resolved",
+      "status": "refund_approved",
       "decision": "refund_recommended",
       "policy_route": "auto_approved",
       "required_tool_calls": [

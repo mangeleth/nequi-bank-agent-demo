@@ -14,7 +14,7 @@ SCENARIO = {
     "id": "small-failed-transfer",
     "request": {"transaction_id": TX, "reason": "failed_transfer", "claimed_amount": "50000.00", "description": ""},
     "expected": {
-        "http_status": 200, "status": "resolved", "decision": "refund_recommended", "policy_route": "auto_approved",
+        "http_status": 200, "status": "refund_approved", "decision": "refund_recommended", "policy_route": "auto_approved",
         "required_tool_calls": [{"name": "get_transaction", "args": {"transaction_id": TX}},
                                 {"name": "get_risk_signals", "args": {"transaction_id": TX}}],
     },
@@ -33,7 +33,7 @@ def run(**overrides) -> dict:
         "total_tokens": 5700,
         "tool_calls": [call("get_transaction", output=LEDGER_OUTPUT), call("get_risk_signals", output=RISK_OUTPUT)],
         "body": {
-            "status": "resolved",
+            "status": "refund_approved",
             "verdict": {"decision": "refund_recommended", "explanation": "50,000.00 COP was debited and 0.00 credited."},
             "approval": {"route": "auto_approved"},
             "fraud": {"signals": ["Engine score 0.08", "Recipient account is 900 days old"], "rationale": "Low risk."},

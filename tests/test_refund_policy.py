@@ -52,7 +52,7 @@ def test_small_clear_case_is_auto_approved_with_ledger_amount():
     approval = run()
     assert approval.route == ApprovalRoute.AUTO_APPROVED
     assert approval.approved_amount == Decimal("50000.00")
-    assert approval.status == DisputeStatus.RESOLVED
+    assert approval.status == DisputeStatus.REFUND_APPROVED  # approved is not paid
     assert failed(approval) == set()
 
 

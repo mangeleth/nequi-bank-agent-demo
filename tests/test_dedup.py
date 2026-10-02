@@ -200,7 +200,7 @@ async def test_result_is_returned_even_if_it_cannot_be_stored():
 
     async with Supervisor(gate=ForgetfulGate()) as supervisor:
         response = await supervisor.post()
-        assert response.status_code == 200 and response.json()["status"] == "resolved"
+        assert response.status_code == 200 and response.json()["status"] == "refund_approved"
 
 
 async def test_readiness_depends_on_the_store():

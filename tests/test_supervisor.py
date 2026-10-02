@@ -98,7 +98,7 @@ def test_small_clear_refund_is_auto_approved():
     body = response.json()
 
     assert response.status_code == 200
-    assert body["status"] == "resolved"
+    assert body["status"] == "refund_approved"  # approved, not paid: never "resolved"
     assert body["verdict"]["decision"] == "refund_recommended"
     assert (body["approval"]["route"], body["approval"]["approved_amount"]) == ("auto_approved", "50000.00")
     assert [step.split(":")[0].split(" ->")[0] for step in body["steps"]] == [
@@ -110,7 +110,7 @@ def test_settled_transfer_needs_no_fraud_assessment():
     response, _, specialists = triage(script, FakeSpecialists(status="settled", credited="50000.00"))
     body = response.json()
 
-    assert (body["status"], body["verdict"]["decision"], body["approval"]) == ("resolved", "no_action", None)
+    assert (body["status"], body["verdict"]["decision"], body["approval"]) == ("closed_no_refund", "no_action", None)
     assert specialists.fraud_calls == 0  # the supervisor skipped an agent it did not need
 
 
