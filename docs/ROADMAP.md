@@ -68,8 +68,9 @@ transactions failed, an agent has nothing to investigate (`docs/LEARNINGS.md`, P
 Planned steps:
 - **Step 9 (done):** dispute store and deduplication key in the supervisor (`claim`,
   `complete`, `release`) on Redis, with tests for 10 simultaneous identical requests (ADR-0015).
-- **Step 10a (in progress):** PostgreSQL dispute records, two separate statuses, `202 Accepted`,
-  and a status endpoint; processing starts at once inside the supervisor.
+- **Step 10a (done, ADR-0016):** PostgreSQL dispute records, two separate statuses, `202
+  Accepted`, and a status endpoint; processing starts at once inside the supervisor.
+  Still to do: update the evaluation to submit and poll.
 - **Step 10b:** the queue and a separate worker, with a short-lived internal token issued by
   the supervisor on the customer's behalf (a customer's login token must not sit in a queue).
   Disputes are stored durably in **PostgreSQL** (a unique constraint on the dispute key; Redis
@@ -126,6 +127,10 @@ explanation is supported by the evidence, so every finished triage is also judge
   table of disputes with their judge results.
 - The judge runs after the customer has their answer: it measures quality and raises alerts;
   it does not block or change a decision.
+- **Generalization and drift:** a held-out labelled set the rubric was never tuned on (does the
+  judge reject an unsupported "bank rejection" after we fixed "insufficient funds"?), and the
+  fixed calibration set re-run on a schedule and after every judge change. The UI shows a judge
+  health panel: agreement and unsafe passes on the tuning set and the held-out set, over time.
 - **Calibration** against answers labelled PASS or FAIL by people: report the agreement rate,
   the number of **unsafe passes** (a person said FAIL, the judge said PASS), and each
   disagreeing case, per rubric criterion. Re-run whenever the judge's prompt or model changes.

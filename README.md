@@ -15,20 +15,22 @@ flowchart LR
     subgraph aks["AKS cluster · namespace disputes"]
         direction LR
         sup["<b>supervisor</b><br/>safety gate + LangGraph<br/>refund policy"]
-        redis[("<b>redis</b><br/>dispute keys<br/>and results")]
+        redis[("<b>redis</b><br/>dispute keys<br/>(fast path)")]
+        pg[("<b>postgres</b><br/>dispute records<br/>statuses, audit trail")]
         fraud["<b>fraud-agent</b><br/>LangChain agent"]
         ledger["<b>ledger-agent</b><br/>LangChain agent<br/>MCP client"]
         core["<b>core-systems</b><br/>Core Banking + Risk Engine<br/>REST and MCP"]
     end
 
     aoai["Azure OpenAI<br/>gpt-4o"]
-    kv["Key Vault<br/>Langfuse keys"]
+    kv["Key Vault<br/>Langfuse keys,<br/>database password"]
     lf["Langfuse Cloud<br/>traces, tokens, cost"]
     acr["Container Registry<br/>images by git SHA"]
-    planned["Planned in M6<br/>dispute queue · refund execution<br/>known-incident registry"]
+    planned["Planned in M6<br/>dispute queue and worker · refund execution<br/>known-incident registry"]
 
-    app -- "POST /v1/disputes/triage" --> sup
+    app -- "POST /v1/disputes (202)<br/>GET /v1/disputes/id" --> sup
     sup <-- "claim key<br/>sha256(user, transaction)" --> redis
+    sup <-- "store, update status" --> pg
     sup -- "JWT + traceparent" --> fraud
     sup -- "JWT + traceparent" --> ledger
     fraud -- "REST" --> core
@@ -37,7 +39,7 @@ flowchart LR
 
     sup & fraud & ledger -. "Workload Identity" .-> aoai
     sup & fraud & ledger -. "traces" .-> lf
-    kv -. "mounted as files (CSI)" .-> sup & fraud & ledger
+    kv -. "mounted as files (CSI)" .-> sup & fraud & ledger & pg
     acr -. "image pull" .-> aks
     sup -.- planned
 
@@ -46,7 +48,7 @@ flowchart LR
     classDef ext fill:#f4f4f4,stroke:#888,color:#222
     classDef plan fill:#ffffff,stroke:#aaa,stroke-dasharray: 5 5,color:#666
     class sup,fraud,ledger llm
-    class core,redis det
+    class core,redis,pg det
     class app,aoai,kv,lf,acr ext
     class planned plan
 ```
@@ -56,8 +58,17 @@ Every service runs as two pods on separate nodes (Redis as one), non-root, with 
 filesystem. Services log in to Azure with Workload Identity; there are no stored Azure keys.
 
 A dispute passes the **safety gate** first: one key per customer and transaction, so ten taps on
-"Dispute" run one triage and nine are answered from the gate without calling a model
-([ADR-0015](docs/adr/0015-deduplication-gate.md)).
+"Dispute" create one dispute and run one triage ([ADR-0015](docs/adr/0015-deduplication-gate.md)).
+
+The API accepts a dispute with `202 Accepted` and the customer follows its progress. Each dispute
+is a stored record with two separate statuses ([ADR-0016](docs/adr/0016-dispute-store-and-two-statuses.md)):
+
+| | Answers | Values |
+|---|---|---|
+| Execution status | What happened to the run? | queued, running, finished, failed |
+| Business status | Where does the customer's dispute stand? | received, investigating, pending human approval, refund approved, refund paid, closed without refund, rejected |
+
+There is no "resolved": an approved refund is `refund_approved` until the ledger confirms payment.
 
 ## The supervisor graph
 
@@ -67,7 +78,7 @@ chooses the route; plain code bounds the loop and enforces which evidence is req
 
 ```mermaid
 flowchart TD
-    start(["POST /v1/disputes/triage<br/>JWT verified, duplicate check at the gate,<br/>ownership checked in code"])
+    start(["POST /v1/disputes → 202<br/>JWT verified, duplicate check at the gate,<br/>ownership checked, dispute stored"])
     supervisor["🤖 supervisor<br/>structured output: Route<br/>turns += 1"]
     edge{"⚙️ conditional edge (code)<br/>breaker tripped?<br/>fraud assessment required?"}
     ledger["ledger_agent<br/>ledger_calls += 1"]
@@ -75,7 +86,7 @@ flowchart TD
     verdict["🤖 write_verdict<br/>structured output: VerdictDraft"]
     policy["⚙️ policy<br/>refund_policy.evaluate()"]
     escalate["👤 escalate<br/>human operations"]
-    done(["TriageResult<br/>+ steps + Langfuse trace URL"])
+    done(["Result stored on the dispute<br/>GET /v1/disputes/id<br/>+ steps + Langfuse trace URL"])
 
     start --> supervisor --> edge
     edge -- "ledger_agent" --> ledger --> supervisor
@@ -255,9 +266,11 @@ make run-supervisor       # terminal 4: Supervisor on :8004 (reads Langfuse keys
 
 # terminal 5: log in as a synthetic customer and dispute a transaction
 TOKEN=$(make demo-token USER_ID=user-1001)
-curl -s -X POST localhost:8004/v1/disputes/triage \
+curl -s -X POST localhost:8004/v1/disputes \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"transaction_id":"TX-20261001000001","reason":"failed_transfer","claimed_amount":"50000.00"}'
+# -> 202 with a dispute_id; then follow it:
+curl -s localhost:8004/v1/disputes/<dispute_id> -H "Authorization: Bearer $TOKEN"
 ```
 
 The synthetic customers and transactions are listed in

@@ -144,6 +144,25 @@ measured zero.
 
 See [ADR-0014](adr/0014-evaluation-against-the-real-model.md).
 
+## 9. A pod started before its secret list was updated (Milestone 6)
+
+**What happened.** The supervisor needed a third Key Vault secret, the database password. The
+new pod crashed at startup: the password file was not there, although the secret list had been
+updated in the same deploy. `make deploy` applied every manifest in one stream, in file-name
+order, so the Deployment was applied before the updated `SecretProviderClass`. The pod was
+created in between and mounted the old list. A Key Vault mount is fixed when the pod starts, so
+restarting the container changed nothing.
+
+**What caught it.** The rollout never became ready, and the old pods kept serving
+(`maxUnavailable: 0`), so nothing was down. The pod's log named the missing file.
+
+**What changed.** `make deploy` now applies configuration and secret mounts first and the
+workload last. The stuck pod was replaced.
+
+**The lesson.** A pod reads its configuration and its mounted secrets once, when it starts.
+Order matters in a deploy, and a rolling update that keeps the old version serving turns a bad
+release into a non-event.
+
 # Part 2: design principles (study notes)
 
 ## A. Know when not to use an agent: the known-incident fast path
@@ -336,11 +355,11 @@ That last point is why the business status needs a **database**: Redis here hold
 results that expire, a trace describes one run, and neither is the durable record of a
 dispute. The plan is PostgreSQL in Milestone 6, Step 10.
 
-**What this repository does today.** `TriageResult.status` is a business status, and a 200
-response means the run finished, so the two are distinct in principle. One value is wrong: an
-automatically approved refund is reported as `resolved` although nothing has been paid, while
-the customer message for the same result says "It has not been paid yet" ([#12](https://github.com/mangeleth/nequi-bank-agent-demo/issues/12)).
-There is no stored dispute record yet.
+**What this repository does today.** Every dispute is a row in PostgreSQL with both statuses
+stored separately (ADR-0016). There is no `resolved`: an automatically approved refund is
+`refund_approved`, and it becomes `refund_paid` only when the ledger confirms the payment
+(Milestone 6, Step 11). A run that fails leaves the dispute as `pending_human_approval`, and the
+customer message says "marked for review by a person". Every status change is in an audit table.
 
 ## F. A correct status does not prove the explanation
 
@@ -395,6 +414,22 @@ disagreeing cases themselves, read one by one. It is done per rubric criterion (
 reliable on groundedness and poor on clarity), and repeated whenever the judge's prompt or
 model changes. Four cases illustrate the arithmetic; a real set needs enough FAIL examples for
 an unsafe-pass rate to mean something.
+
+**Generalization versus drift.** Two more questions about a judge, checked separately:
+
+| Concept | What we are checking | Example |
+|---|---|---|
+| **Generalization** | Does the judge work beyond the examples used to tune its rubric? | We corrected "insufficient funds"; can it also reject an unsupported "bank rejection"? |
+| **Drift** | Does the judge still behave today as it did when it was calibrated? | The judge model was updated, or disputes now include a new kind of transfer: do agreement and unsafe passes hold? |
+
+- *Generalization* is tested with a **held-out set**: labelled examples that were never used
+  while writing the rubric. Tuning the rubric until the tuning examples pass proves little; a
+  judge that only learned those examples fails on the next unsupported cause.
+- *Drift* is tested by **re-running the same fixed calibration set on a schedule** and after
+  every change to the judge's model or prompt, and comparing with the previous run.
+- Both belong on screen next to the judge's verdicts: agreement and unsafe passes on the tuning
+  set and on the held-out set, and the same numbers over time. A judge whose health cannot be
+  seen will be trusted or ignored for the wrong reasons.
 
 **What this repository does today.** The evaluation checks numbers only (*numeric*
 groundedness): every amount, score, and count the models write must appear in the tool results.

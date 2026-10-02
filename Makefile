@@ -286,13 +286,17 @@ push: acr-login
 
 ## Apply the namespace and the service manifests. ${...} placeholders are filled from .env, the
 ## image is pinned to this commit, and WI_CLIENT_ID is the service's managed identity (if any).
+## Config and secret mounts are applied BEFORE the workload: a pod reads them once, when it
+## starts, so a pod created first would start with the old ones.
+RENDER = IMAGE=$(IMAGE) WI_CLIENT_ID=$$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) --query clientId -o tsv 2>/dev/null) \
+	AZURE_TENANT_ID=$$(az account show --query tenantId -o tsv) \
+	envsubst '$$IMAGE $$ACR_NAME $$WI_CLIENT_ID $$AZURE_TENANT_ID $$KEYVAULT_NAME $$AOAI_NAME $$AOAI_DEPLOYMENT $$AOAI_API_VERSION $$JWT_ISSUER $$JWT_AUDIENCE $$LANGFUSE_BASE_URL'
+WORKLOAD_FILES = k8s/$(SERVICE)/deployment.yaml k8s/$(SERVICE)/statefulset.yaml
+
 deploy:
 	kubectl apply -f k8s/namespace.yaml
-	cat k8s/$(SERVICE)/*.yaml \
-		| IMAGE=$(IMAGE) WI_CLIENT_ID=$$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) --query clientId -o tsv 2>/dev/null) \
-		  AZURE_TENANT_ID=$$(az account show --query tenantId -o tsv) \
-		  envsubst '$$IMAGE $$ACR_NAME $$WI_CLIENT_ID $$AZURE_TENANT_ID $$KEYVAULT_NAME $$AOAI_NAME $$AOAI_DEPLOYMENT $$AOAI_API_VERSION $$JWT_ISSUER $$JWT_AUDIENCE $$LANGFUSE_BASE_URL' \
-		| kubectl apply -f -
+	cat $(filter-out $(WORKLOAD_FILES),$(wildcard k8s/$(SERVICE)/*.yaml)) | $(RENDER) | kubectl apply -f -
+	cat $(filter $(WORKLOAD_FILES),$(wildcard k8s/$(SERVICE)/*.yaml)) | $(RENDER) | kubectl apply -f -
 	kubectl rollout status $(WORKLOAD)/$(SERVICE) -n $(K8S_NAMESPACE) --timeout=240s
 
 ## Call the service from inside the cluster via its ClusterIP DNS name
