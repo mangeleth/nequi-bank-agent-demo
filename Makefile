@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: test-db venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster redis-image postgres-image postgres-password demo-reset test guard-clean build push deploy smoke release
+.PHONY: test-db venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster redis-image postgres-image postgres-password signing-key signing-key-publish demo-reset test guard-clean build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -204,6 +204,37 @@ postgres-password:
 			--value "$$(openssl rand -base64 36 | tr -d '/+=\n')" -o none \
 		&& echo "postgres-password created in $(KEYVAULT_NAME)."; \
 	fi
+
+SIGNING_KEY = supervisor-signing-key
+
+## Create the key the supervisor signs its own tokens with (ADR-0017). The private half is
+## generated inside Key Vault and cannot be read out; id-supervisor may only ask for signatures.
+## Skips creation if the key exists (a new version would invalidate the published public key).
+signing-key:
+	az role assignment create -o none --role "Key Vault Crypto Officer" \
+		--assignee $$(az ad signed-in-user show --query id -o tsv) \
+		--scope $$(az keyvault show -n $(KEYVAULT_NAME) --query id -o tsv)
+	@if az keyvault key show --vault-name $(KEYVAULT_NAME) -n $(SIGNING_KEY) -o none 2>/dev/null; then \
+		echo "$(SIGNING_KEY) already exists in $(KEYVAULT_NAME) - not changed."; \
+	else \
+		for i in 1 2 3 4 5 6; do \
+			az keyvault key create --vault-name $(KEYVAULT_NAME) -n $(SIGNING_KEY) --kty RSA --size 2048 \
+				--ops sign verify -o none 2>/dev/null && echo "$(SIGNING_KEY) created." && break; \
+			echo "waiting for the Crypto Officer role to take effect..."; sleep 20; \
+		done; \
+	fi
+	az role assignment create -o none --role "Key Vault Crypto User" \
+		--assignee-object-id $$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-supervisor --query principalId -o tsv) \
+		--assignee-principal-type ServicePrincipal \
+		--scope $$(az keyvault show -n $(KEYVAULT_NAME) --query id -o tsv)/keys/$(SIGNING_KEY)
+
+## Publish the PUBLIC half of that key to the cluster, so the agents can check the signatures
+signing-key-publish:
+	@mkdir -p .local && rm -f .local/supervisor-signing-public.pem
+	az keyvault key download --vault-name $(KEYVAULT_NAME) -n $(SIGNING_KEY) --encoding PEM \
+		--file .local/supervisor-signing-public.pem
+	kubectl create configmap internal-jwt-public-key -n $(K8S_NAMESPACE) \
+		--from-file=internal-jwt-public.pem=.local/supervisor-signing-public.pem --dry-run=client -o yaml | kubectl apply -f -
 
 ## Forget every dispute: gate keys in Redis and records in PostgreSQL (demo and evaluation only)
 demo-reset:

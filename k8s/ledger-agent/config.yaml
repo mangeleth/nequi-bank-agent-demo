@@ -18,6 +18,10 @@ data:
   JWT_ISSUER: ${JWT_ISSUER}
   JWT_AUDIENCE: ${JWT_AUDIENCE}
   JWT_PUBLIC_KEY_FILE: /etc/jwt/jwt-public.pem
+  # Second trusted issuer: the supervisor acting for a customer (ADR-0017)
+  INTERNAL_JWT_ISSUER: https://supervisor.disputes.internal
+  INTERNAL_JWT_AUDIENCE: dispute-agents
+  INTERNAL_JWT_PUBLIC_KEY_FILE: /etc/internal-jwt/internal-jwt-public.pem
   # Langfuse: the keys are files mounted from Key Vault (see secrets.yaml), never env values
   LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL}
   LANGFUSE_PUBLIC_KEY_FILE: /mnt/secrets/langfuse-public-key

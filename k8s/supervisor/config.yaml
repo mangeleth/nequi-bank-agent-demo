@@ -19,6 +19,11 @@ data:
   JWT_ISSUER: ${JWT_ISSUER}
   JWT_AUDIENCE: ${JWT_AUDIENCE}
   JWT_PUBLIC_KEY_FILE: /etc/jwt/jwt-public.pem
+  # Tokens the supervisor issues to act for a customer (ADR-0017). The key is a Key Vault KEY:
+  # the supervisor asks Key Vault to sign and never holds the private half.
+  INTERNAL_JWT_ISSUER: https://supervisor.disputes.internal
+  INTERNAL_JWT_AUDIENCE: dispute-agents
+  INTERNAL_JWT_KEY_ID: https://${KEYVAULT_NAME}.vault.azure.net/keys/supervisor-signing-key
   # Langfuse: the keys are files mounted from Key Vault (see secrets.yaml), never env values
   LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL}
   LANGFUSE_PUBLIC_KEY_FILE: /mnt/secrets/langfuse-public-key

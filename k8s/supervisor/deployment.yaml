@@ -9,7 +9,8 @@ metadata:
     app.kubernetes.io/part-of: dispute-triage
   annotations:
     # Workload Identity: this ServiceAccount is federated to the managed identity id-supervisor,
-    # which may call Azure OpenAI and read the two Langfuse secrets in Key Vault. Not a secret.
+    # which may call Azure OpenAI, read its secrets in Key Vault, and ask Key Vault to sign
+    # with the supervisor's signing key. Not a secret.
     azure.workload.identity/client-id: ${WI_CLIENT_ID}
 # The pod never calls the Kubernetes API. The Entra ID token exchange uses a separate,
 # short-lived token that the workload identity webhook mounts.
