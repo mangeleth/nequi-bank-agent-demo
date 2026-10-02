@@ -167,3 +167,20 @@ async def test_settle_moves_a_finished_approved_dispute_on_exactly_once(store):
     assert (stored.execution_status, stored.business_status) == (ExecutionStatus.FINISHED, DisputeStatus.REFUND_PAID)
     assert stored.customer_message.endswith("paid back to your account.")
     assert [event["note"] for event in await store.events(record.dispute_id)][-1] == "refund paid: RF-1"
+
+
+async def test_a_judgement_is_stored_replaced_and_listed_with_its_dispute(store):
+    record, _ = await new_dispute(store)
+    assert await store.judgement(record.dispute_id) is None
+
+    verdict = {"groundedness": {"passed": False, "reason": "invented cause"},
+               "completeness": {"passed": True, "reason": "ok"}, "clarity": {"passed": True, "reason": "ok"}}
+    await store.save_judgement(record.dispute_id, verdict, passed=False, prompt_version="v3")
+    await store.save_judgement(record.dispute_id, verdict, passed=False, prompt_version="v4")  # judged again
+
+    stored = await store.judgement(record.dispute_id)
+    assert (stored["passed"], stored["prompt_version"]) == (False, "v4")
+    assert stored["result"]["groundedness"]["reason"] == "invented cause"
+    listed = await store.judgements()
+    assert [(j["dispute_id"], j["transaction_id"], j["business_status"]) for j in listed] == [
+        (record.dispute_id, REQUEST.transaction_id, "received")]

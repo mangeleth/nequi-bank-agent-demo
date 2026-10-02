@@ -94,6 +94,7 @@ def create_app(
     recursion_limit: int = RECURSION_LIMIT,
     retry_delay_seconds: float = RETRY_DELAY_SECONDS,
     shutdown_grace_seconds: float = 30.0,
+    judge_jobs=None,
 ) -> FastAPI:
     """Build the app. Arguments default to real, env-configured dependencies; tests pass fakes."""
 
@@ -128,6 +129,7 @@ def create_app(
             payer = RefundPayer(store=state.store, queue=refunds, specialists=state.specialists,
                                 retry_delay_seconds=retry_delay_seconds, **RefundPayer.settings_from_env())
             runner = TriageRunner(
+                judge_jobs=judge_jobs,
                 store=state.store, queue=state.queue, refunds=refunds, graph=build_graph(model or build_chat_model()),
                 specialists=state.specialists, policy=policy or RefundPolicyConfig.from_env(),
                 tracing=worker_tracing, signer=signing, delegation=settings,

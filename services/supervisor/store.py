@@ -88,6 +88,17 @@ class DisputeStore(Protocol):
 
     async def events(self, dispute_id: UUID) -> list[dict]: ...
 
+    async def save_judgement(self, dispute_id: UUID, result: dict, *, passed: bool | None,
+                             prompt_version: str) -> None:
+        """Store (or replace) the LLM judge's verdict on a dispute's explanation (ADR-0026).
+        `passed` is None when the judge could not grade it; `result` then holds the error."""
+
+    async def judgement(self, dispute_id: UUID) -> dict | None:
+        """The judge's verdict on one dispute, or None if it has not been judged."""
+
+    async def judgements(self, limit: int = 50) -> list[dict]:
+        """The most recent verdicts, newest first, with the dispute's transaction and status."""
+
     async def ping(self) -> bool: ...
 
 
@@ -100,6 +111,7 @@ class InMemoryDisputeStore:
     def __init__(self) -> None:
         self._by_id: dict[UUID, DisputeRecord] = {}
         self._events: dict[UUID, list[dict]] = {}
+        self._judgements: dict[UUID, dict] = {}
 
     def _log(self, record: DisputeRecord, note: str) -> None:
         self._events.setdefault(record.dispute_id, []).append({
@@ -183,6 +195,18 @@ class InMemoryDisputeStore:
     async def events(self, dispute_id):
         return list(self._events.get(dispute_id, []))
 
+    async def save_judgement(self, dispute_id, result, *, passed, prompt_version):
+        self._judgements[dispute_id] = {"dispute_id": dispute_id, "judged_at": datetime.now(UTC), "passed": passed,
+                                        "prompt_version": prompt_version, "result": result}
+
+    async def judgement(self, dispute_id):
+        return self._judgements.get(dispute_id)
+
+    async def judgements(self, limit=50):
+        rows = sorted(self._judgements.values(), key=lambda j: j["judged_at"], reverse=True)[:limit]
+        return [j | {"transaction_id": self._by_id[j["dispute_id"]].transaction_id,
+                     "business_status": self._by_id[j["dispute_id"]].business_status.value} for j in rows]
+
     async def ping(self):
         return True
 
@@ -207,6 +231,15 @@ CREATE TABLE IF NOT EXISTS disputes (
 -- The human review queue is one query: WHERE business_status = 'pending_human_approval' ORDER BY created_at
 CREATE INDEX IF NOT EXISTS disputes_by_status ON disputes (business_status, created_at);
 CREATE INDEX IF NOT EXISTS disputes_active ON disputes (updated_at) WHERE execution_status IN ('queued', 'running');
+
+CREATE TABLE IF NOT EXISTS dispute_judgements (   -- the LLM judge's verdict on the explanation (ADR-0026)
+    dispute_id      uuid PRIMARY KEY REFERENCES disputes (dispute_id) ON DELETE CASCADE,
+    judged_at       timestamptz NOT NULL DEFAULT now(),
+    prompt_version  text NOT NULL,
+    passed          boolean,          -- NULL: the judge could not grade it (see result)
+    result          jsonb NOT NULL
+);
+CREATE INDEX IF NOT EXISTS dispute_judgements_recent ON dispute_judgements (judged_at DESC);
 
 CREATE TABLE IF NOT EXISTS dispute_events (   -- append-only audit trail of every status change
     event_id          bigserial PRIMARY KEY,
@@ -334,6 +367,31 @@ class PostgresDisputeStore:
             cursor = await conn.execute(
                 "SELECT at, execution_status, business_status, note FROM dispute_events "
                 "WHERE dispute_id = %s ORDER BY event_id", (dispute_id,))
+            return await cursor.fetchall()
+
+    async def save_judgement(self, dispute_id, result, *, passed, prompt_version):
+        from psycopg.types.json import Jsonb
+
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO dispute_judgements (dispute_id, prompt_version, passed, result) VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (dispute_id) DO UPDATE SET judged_at = now(), prompt_version = EXCLUDED.prompt_version, "
+                "passed = EXCLUDED.passed, result = EXCLUDED.result",
+                (dispute_id, prompt_version, passed, Jsonb(result)))
+
+    async def judgement(self, dispute_id):
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT dispute_id, judged_at, passed, prompt_version, result FROM dispute_judgements WHERE dispute_id = %s",
+                (dispute_id,))
+            return await cursor.fetchone()
+
+    async def judgements(self, limit=50):
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT j.dispute_id, j.judged_at, j.passed, j.prompt_version, j.result, d.transaction_id, "
+                "d.business_status FROM dispute_judgements j JOIN disputes d USING (dispute_id) "
+                "ORDER BY j.judged_at DESC LIMIT %s", (limit,))
             return await cursor.fetchall()
 
     async def ping(self):

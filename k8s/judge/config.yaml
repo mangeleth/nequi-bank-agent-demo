@@ -1,0 +1,26 @@
+---
+# Settings for the judge worker (ADR-0026). ${...} values are filled from .env by `make deploy`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: judge
+  namespace: disputes
+  labels:
+    app.kubernetes.io/name: judge
+    app.kubernetes.io/part-of: dispute-triage
+data:
+  # Its jobs: a Redis stream the triage worker writes to
+  JUDGE_JOBS: redis
+  REDIS_URL: redis://redis:6379/0
+  # The dispute records it reads and annotates with verdicts
+  DISPUTE_STORE: postgres
+  PGHOST: postgres
+  PGDATABASE: disputes
+  PGUSER: disputes
+  POSTGRES_PASSWORD_FILE: /mnt/secrets/postgres-password
+  # The evidence: read by code from Core Systems
+  CORE_SYSTEMS_URL: http://core-systems
+  # The judge model
+  AOAI_NAME: ${AOAI_NAME}
+  AOAI_DEPLOYMENT: ${AOAI_DEPLOYMENT}
+  AOAI_API_VERSION: ${AOAI_API_VERSION}

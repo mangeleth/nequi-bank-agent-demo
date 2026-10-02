@@ -15,6 +15,9 @@ data:
   SERVICEBUS_QUEUE: ${SERVICEBUS_QUEUE}
   # Approved refunds go here, for the refund payer (ADR-0021). This worker may only send to it.
   REFUNDS_QUEUE: ${REFUNDS_QUEUE}
+  # Finished explanations are queued for the LLM judge (ADR-0026). Never affects a dispute.
+  JUDGE_JOBS: redis
+  REDIS_URL: redis://redis:6379/0
   DISPUTE_STORE: postgres
   PGHOST: postgres
   PGDATABASE: disputes

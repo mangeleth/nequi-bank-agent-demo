@@ -25,6 +25,7 @@ from langchain_core.language_models import BaseChatModel
 
 from services.supervisor.clients import HttpSpecialists, Specialists
 from services.supervisor.graph import RECURSION_LIMIT, build_graph
+from services.supervisor.judge_jobs import JudgeJobs, build_judge_jobs
 from services.supervisor.queue import DisputeQueue, ServiceBusQueue
 from services.supervisor.store import DisputeStore, open_store
 from services.supervisor.triage import RETRY_DELAY_SECONDS, TriageRunner
@@ -44,6 +45,7 @@ def create_app(
     store: DisputeStore | None = None,
     queue: DisputeQueue | None = None,
     refunds: DisputeQueue | None = None,
+    judge_jobs: JudgeJobs | None = None,
     signer: TokenSigner | None = None,
     delegation: DelegationSettings | None = None,
     recursion_limit: int = RECURSION_LIMIT,
@@ -84,6 +86,7 @@ def create_app(
             recursion_limit=recursion_limit,
             retry_delay_seconds=retry_delay_seconds,
             shutdown_grace_seconds=shutdown_grace_seconds,
+            judge_jobs=judge_jobs if judge_jobs is not None else build_judge_jobs(),
         )
         app.state.consumer = asyncio.create_task(runner.run_forever())
         log.info("worker started: consuming the dispute queue")
