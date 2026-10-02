@@ -198,3 +198,21 @@ async def test_two_instances_of_core_systems(backend):
             # In memory, the other replica knows nothing: it PAYS AGAIN. This is why a ledger
             # that is written to cannot run as two replicas without a shared store.
             assert same_key.status_code == 201 and same_key.json()["refund_id"] != paid.json()["refund_id"]
+
+
+async def test_reset_puts_the_ledger_back_to_the_starting_data(backend):
+    if backend != "postgres":
+        pytest.skip("the in-memory ledger starts fresh with every instance")
+    from services.core_systems.adapters.postgres import open_postgres_ledger
+
+    async with core() as http:
+        await refund(http)
+        assert await history(http) == (1, "50000.00")
+
+        ledger, pool = await open_postgres_ledger()  # what `make demo-reset` runs inside a pod
+        await ledger.reset()
+        await pool.close()
+
+        assert (await transaction(http))["settlement_status"] == "failed"
+        assert await history(http) == (0, "0.00")
+        assert (await refund(http)).status_code == 201  # and it can be paid again

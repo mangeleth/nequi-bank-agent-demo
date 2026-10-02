@@ -7,6 +7,10 @@ metadata:
   labels:
     app.kubernetes.io/name: core-systems
     app.kubernetes.io/part-of: dispute-triage
+  annotations:
+    # Workload Identity: federated to the managed identity id-core-systems, which may read only
+    # the ledger-password secret in Key Vault. It has no Azure OpenAI access: no model runs here.
+    azure.workload.identity/client-id: ${WI_CLIENT_ID}
 # This service never calls the Kubernetes API, so it gets no API token.
 automountServiceAccountToken: false
 ---
@@ -34,6 +38,7 @@ spec:
       labels:
         app.kubernetes.io/name: core-systems
         app.kubernetes.io/part-of: dispute-triage
+        azure.workload.identity/use: "true" # asks the webhook to inject the identity token
     spec:
       serviceAccountName: core-systems
       automountServiceAccountToken: false
@@ -61,8 +66,18 @@ spec:
             - name: http
               containerPort: 8000
           env:
+            # One ledger shared by both replicas (ADR-0019). With `in_memory` each pod would
+            # keep its own copy, and a refund paid by one would be unknown to the other.
             - name: CORE_SYSTEMS_BACKEND
-              value: in_memory
+              value: postgres
+            - name: LEDGER_PGHOST
+              value: postgres
+            - name: LEDGER_PGDATABASE
+              value: ledger
+            - name: LEDGER_PGUSER
+              value: ledger
+            - name: LEDGER_PASSWORD_FILE
+              value: /mnt/secrets/ledger-password
           resources:
             requests:
               cpu: 50m
@@ -88,6 +103,15 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: ledger-password
+              mountPath: /mnt/secrets
+              readOnly: true
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: ledger-password
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: core-systems-ledger

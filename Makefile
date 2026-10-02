@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: test-db test-servicebus venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster failure-tests failure-test-kill redis-image postgres-image postgres-password signing-key signing-grant signing-key-publish servicebus-create sb-grant demo-reset test guard-clean validate build push deploy smoke release
+.PHONY: test-db test-servicebus venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster failure-tests failure-test-kill redis-image postgres-image postgres-password ledger-password ledger-db signing-key signing-grant signing-key-publish servicebus-create sb-grant demo-reset test guard-clean validate build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -216,6 +216,21 @@ postgres-password:
 		&& echo "postgres-password created in $(KEYVAULT_NAME)."; \
 	fi
 
+## Create the password of the ledger's database user in Key Vault (ADR-0019). Never printed;
+## skipped if it exists.
+ledger-password:
+	@if az keyvault secret show --vault-name $(KEYVAULT_NAME) -n ledger-password -o none 2>/dev/null; then \
+		echo "ledger-password already exists in $(KEYVAULT_NAME) - not changed."; \
+	else \
+		az keyvault secret set --vault-name $(KEYVAULT_NAME) -n ledger-password \
+			--value "$$(openssl rand -base64 36 | tr -d '/+=\n')" -o none \
+		&& echo "ledger-password created in $(KEYVAULT_NAME)."; \
+	fi
+
+## Create the ledger's own database and user inside the PostgreSQL pod. Safe to run again.
+ledger-db:
+	@scripts/ledger_db.sh $(K8S_NAMESPACE) $(KEYVAULT_NAME)
+
 SIGNING_KEY = supervisor-signing-key
 
 ## Create the key the supervisor signs its own tokens with (ADR-0017). The private half is
@@ -277,6 +292,7 @@ sb-grant:
 demo-reset:
 	kubectl exec -n $(K8S_NAMESPACE) deploy/redis -- redis-cli FLUSHDB
 	kubectl exec -n $(K8S_NAMESPACE) postgres-0 -- psql -q -U disputes -d disputes -c "TRUNCATE disputes CASCADE"
+	kubectl exec -n $(K8S_NAMESPACE) deploy/core-systems -- python -m services.core_systems.adapters.postgres reset
 
 ## Publish the demo identity provider's PUBLIC key to the cluster (it verifies tokens; not a secret)
 jwt-publish:

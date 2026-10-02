@@ -63,21 +63,32 @@ class PostgresLedger:
         async with self._pool.connection() as conn, conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock(727002)")
             await conn.execute(SCHEMA)
-            if (await (await conn.execute("SELECT count(*) AS n FROM ledger_transactions")).fetchone())["n"]:
-                return
-            now = datetime.now(UTC)
-            for tx in TRANSACTIONS.values():
+            if not (await (await conn.execute("SELECT count(*) AS n FROM ledger_transactions")).fetchone())["n"]:
+                await self._load_fixtures(conn)
+
+    async def reset(self) -> None:
+        """Demo only: put the ledger back to the synthetic starting data (`make demo-reset`)."""
+        async with self._pool.connection() as conn, conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock(727002)")
+            await conn.execute(SCHEMA)
+            await conn.execute("TRUNCATE ledger_refunds, ledger_transactions")
+            await self._load_fixtures(conn)
+
+    @staticmethod
+    async def _load_fixtures(conn) -> None:
+        now = datetime.now(UTC)
+        for tx in TRANSACTIONS.values():
+            await conn.execute(
+                f"INSERT INTO ledger_transactions ({_TX_COLUMNS}) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (tx["transaction_id"], tx["customer_id"], tx["recipient_account"], tx["amount"], tx["currency"],
+                 tx["created_at"], tx["settlement_status"].value, tx["debited_amount"], tx["credited_amount"]))
+        for customer, past in AUTO_REFUNDS.items():  # refunds from before this demo; no transaction attached
+            for index, (days_ago, amount) in enumerate(past):
                 await conn.execute(
-                    f"INSERT INTO ledger_transactions ({_TX_COLUMNS}) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    (tx["transaction_id"], tx["customer_id"], tx["recipient_account"], tx["amount"], tx["currency"],
-                     tx["created_at"], tx["settlement_status"].value, tx["debited_amount"], tx["credited_amount"]))
-            for customer, past in AUTO_REFUNDS.items():  # refunds from before this demo; no transaction attached
-                for index, (days_ago, amount) in enumerate(past):
-                    await conn.execute(
-                        "INSERT INTO ledger_refunds (refund_id, idempotency_key, customer_id, amount, currency, executed_at) "
-                        "VALUES (%s, %s, %s, %s, 'COP', %s)",
-                        (f"RF-seed-{customer}-{index}", f"seed:{customer}:{index}", customer, amount,
-                         now - timedelta(days=days_ago)))
+                    "INSERT INTO ledger_refunds (refund_id, idempotency_key, customer_id, amount, currency, executed_at) "
+                    "VALUES (%s, %s, %s, %s, 'COP', %s)",
+                    (f"RF-seed-{customer}-{index}", f"seed:{customer}:{index}", customer, amount,
+                     now - timedelta(days=days_ago)))
 
     async def get_transaction(self, customer_id: str, transaction_id: str) -> Transaction | None:
         async with self._pool.connection() as conn:
@@ -174,3 +185,18 @@ async def open_postgres_ledger() -> tuple[PostgresLedger, object]:
     ledger = PostgresLedger(pool)
     await ledger.migrate()
     return ledger, pool
+
+
+if __name__ == "__main__":  # python -m services.core_systems.adapters.postgres reset
+    import asyncio
+    import sys
+
+    async def _reset() -> None:
+        ledger, pool = await open_postgres_ledger()
+        await ledger.reset()
+        await pool.close()
+
+    if sys.argv[1:] != ["reset"]:
+        sys.exit("usage: python -m services.core_systems.adapters.postgres reset")
+    asyncio.run(_reset())
+    print("ledger reset to the synthetic starting data")
