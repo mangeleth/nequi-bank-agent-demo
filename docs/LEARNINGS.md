@@ -261,11 +261,11 @@ Still unresolved?
 |---|---|---|
 | Sufficient and consistent: answer from the evidence | Yes | The supervisor chooses `finish`, the verdict is written from the gathered evidence, and the policy decides (all seven fixture scenarios). |
 | Missing: retrieve it | Yes | The supervisor loops back to an agent; code forces the fraud assessment when a refund is possible; a failed agent is called once more. Finishing without ledger evidence is refused. |
-| Conflicting, by **authority** | Yes | The system of record outranks every other source. Customer says "failed", ledger says "settled": no action. Model's figures differ from the ledger: rejected. Recommended refund differs from the ledger's discrepancy: sent to a person. |
+| Conflicting, by **authority** | Yes | The system of record outranks every other source. Customer says "failed", ledger says "settled": no action. Model's figures differ from the ledger: rejected. Recommended refund differs from the ledger's discrepancy: sent to a person. Model says "no action" while the ledger shows money missing: sent to a person. |
 | Conflicting, by **identity** | Yes | Identity comes only from the verified token; "I am user-1002" in the text changes nothing. Evidence that refers to different transactions fails the policy's `same_transaction` check. |
 | Conflicting, by **timing** | **No** | Nothing checks how fresh the evidence is. A transfer that moves from pending to settled between the lookup and the decision would be judged on the stale reading. There is also no rule about how old a transaction may be to dispute. |
 | Customer's claimed amount differs from the ledger | **Partly** | The policy pays the ledger's figure whatever was claimed, so the money is right, but no test or scenario exercises the mismatch and nothing reports it to a reviewer. |
-| Still unresolved: state what is known and what is uncertain | **Partly** | The result carries the evidence gathered, the path taken, and an `escalation_reason`. It does not separate "known" from "uncertain", and the reason is written for engineers, not customers (entry D). |
+| Still unresolved: state what is known and what is uncertain | **Partly** | The customer message states only established facts and leaves out what is not known (entry D). The result still does not list what remains *uncertain* for a reviewer. |
 | Escalate when policy demands it | Yes | Policy limits send refunds to a person; high fraud risk goes to fraud operations; every breaker and failure ends in the `escalate` node. |
 
 ## D. Say only what has been established
@@ -285,8 +285,13 @@ been sent. Saying it earlier is a small false statement to a customer about thei
 **The same rule applies to verbs about money:** "recommended", "approved", "sent", and
 "received" are four different facts, and a message may use only the one that has happened.
 
-**What this repository does today.** There is no customer wording yet. The customer-facing
-text is the model's free-text `explanation`, and `escalation_reason` reads like a log line
-("the fraud agent was already called 2 times"). An `auto_approved` refund is a decision; no
-money moves yet, so a message saying "your refund has been sent" would be false today. The fix
-is a message chosen by code from the final state, with the model's text as supporting detail.
+**What this repository does today.** Every triage result carries a `customer_message` chosen by
+code from the final state (`services/supervisor/messages.py`). Its facts come from the ledger
+figures and the refund policy; nothing a model wrote is repeated in it. Its verbs match what has
+happened: a refund is "recommended" or "approved", and an approved refund is followed by "It has
+not been paid yet", because this system does not pay yet. A case that needs a person is "marked
+for review", not "sent for review", because there is no review queue to send it to until
+Milestone 6. Tests check that no message uses a verb for an action that has not happened, and
+the evaluation checks the message on the deployed system. The "investigation is running"
+wording has no use yet: a triage is a single request, so there is no running state to report
+until intake becomes asynchronous (Milestone 6).

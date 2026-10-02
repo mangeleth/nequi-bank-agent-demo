@@ -81,6 +81,7 @@ def evaluate(run: dict, scenario: dict) -> dict:
             body.get("status") == expected["status"]
             and (body.get("verdict") or {}).get("decision") == expected["decision"]
             and (body.get("approval") or {}).get("route") == expected["policy_route"]
+            and expected.get("customer_message_contains", "") in body.get("customer_message", "")
         )
 
     # What the model was given: the request and every tool result recorded in the trace.
@@ -99,6 +100,7 @@ def evaluate(run: dict, scenario: dict) -> dict:
             "status": body.get("status"),
             "decision": (body.get("verdict") or {}).get("decision"),
             "policy_route": (body.get("approval") or {}).get("route"),
+            "customer_message": body.get("customer_message"),
             "escalation_reason": body.get("escalation_reason"),
         },
     }

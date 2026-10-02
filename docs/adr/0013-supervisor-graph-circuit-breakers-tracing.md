@@ -31,6 +31,11 @@ prevent this; it would only have repeated it.
   dispute to the Fraud Agent even if the model chose `finish`. The model keeps discretion where
   it is safe: the order of lookups, retries, and skipping the Fraud Agent when no refund is
   possible (settled, pending, reversed).
+- **The ledger outranks the verdict.** A verdict of "no action" cannot close a dispute where the
+  ledger shows a failed transfer with money missing; that contradiction goes to a person.
+- **The customer message is chosen by code** from the final state, using ledger figures and the
+  policy decision, with verbs that match what has happened ("approved", never "paid"; "marked
+  for review", never "sent"). The model's explanation is supporting detail, not the message.
 - **The verdict is a recommendation.** `policy` runs `shared/refund_policy.evaluate()` with the
   ledger's figures and the customer's refund history fetched by code (ADR-0007). If the history
   is unavailable the dispute is escalated: fail closed.

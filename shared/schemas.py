@@ -210,6 +210,7 @@ class TriageResult(Contract):
     approval: RefundApproval | None = None  # the deterministic policy decision, for refunds
     fraud: FraudAssessment | None = None
     ledger: LedgerReconciliation | None = None
-    escalation_reason: str | None = None  # set when the dispute was handed to human operations
+    customer_message: str  # chosen by code from established facts; never model-written text
+    escalation_reason: str | None = None  # for operations: why the dispute needs a person
     steps: list[str] = Field(default_factory=list)  # the path taken through the graph, in order
     trace_url: str | None = None  # Langfuse trace for this run

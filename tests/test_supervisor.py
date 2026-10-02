@@ -123,6 +123,24 @@ def test_refund_over_the_limit_goes_to_a_human():
     assert failed_checks(body) == {"under_amount_limit", "under_refund_total_limit"}
 
 
+def test_no_action_cannot_close_a_dispute_where_money_is_missing():
+    # The model says "no action" although the ledger shows 50.000 debited and never credited.
+    script = [route("ledger_agent"), route("fraud_agent"), route("finish"), verdict("no_action", None)]
+    response, _, _ = triage(script)
+    body = response.json()
+
+    assert body["status"] == "pending_human_approval"
+    assert "ledger shows a failed transfer with money missing" in body["escalation_reason"]
+    assert "marked for review by a person" in body["customer_message"]
+
+
+def test_customer_message_is_built_from_ledger_and_policy_facts():
+    response, _, _ = triage(HAPPY)
+    assert response.json()["customer_message"] == (
+        "The transfer is marked as failed: 50000.00 COP was debited from your account and 0.00 COP reached "
+        "the recipient. A refund of 50000.00 COP has been approved. It has not been paid yet.")
+
+
 def test_high_fraud_risk_goes_to_fraud_operations():
     script = [route("ledger_agent"), route("fraud_agent"), route("finish"), verdict("escalate_fraud", None)]
     response, _, _ = triage(script, FakeSpecialists(risk=(0.86, "high")))

@@ -59,6 +59,14 @@ def test_any_wrong_outcome_field_fails_the_task(body_change):
     assert evaluate(run(body=run()["body"] | body_change), SCENARIO)["task_success"] is False
 
 
+def test_a_wrong_customer_message_fails_the_task():
+    scenario = SCENARIO | {"expected": SCENARIO["expected"] | {"customer_message_contains": "has been approved"}}
+    said_paid = run()["body"] | {"customer_message": "Your refund has been paid."}
+    said_approved = run()["body"] | {"customer_message": "A refund of 50000.00 COP has been approved."}
+    assert evaluate(run(body=said_paid), scenario)["task_success"] is False
+    assert evaluate(run(body=said_approved), scenario)["task_success"] is True
+
+
 def test_http_200_is_not_success_when_the_outcome_is_wrong():
     escalated = run()["body"] | {"status": "pending_human_approval", "approval": None, "escalation_reason": "x"}
     assert evaluate(run(body=escalated), SCENARIO)["task_success"] is False

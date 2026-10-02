@@ -24,6 +24,7 @@ from langgraph.errors import GraphRecursionError
 
 from services.supervisor.clients import HttpSpecialists, Specialists, SpecialistUnavailable
 from services.supervisor.graph import RECURSION_LIMIT, TriageContext, TriageState, build_graph
+from services.supervisor.messages import customer_message
 from shared.auth import AuthError, AuthSettings, CallerIdentity, bearer_token, verify_token
 from shared.refund_policy import RefundPolicyConfig
 from shared.schemas import Decision, DisputeRequest, DisputeStatus, TriageResult
@@ -53,6 +54,10 @@ def _result(dispute: DisputeRequest, state: TriageState, trace_url: str | None) 
         approval=state.get("approval"),
         fraud=state.get("fraud"),
         ledger=state.get("ledger"),
+        customer_message=customer_message(
+            ledger=state.get("ledger"), verdict=verdict, approval=state.get("approval"),
+            escalated=bool(state.get("escalation_reason")),
+        ),
         escalation_reason=state.get("escalation_reason"),
         steps=state.get("steps", []),
         trace_url=trace_url,

@@ -188,19 +188,24 @@ def escalation_reason(state: TriageState) -> str:
     verdict = state.get("verdict")
     if verdict is None:
         return "the verdict could not be produced"
+    if verdict.decision == Decision.NO_ACTION:
+        return "the verdict was no action, but the ledger shows a failed transfer with money missing"
     if state.get("fraud") is None:
         return "a refund was recommended without a fraud assessment"
     return "the customer's refund history was unavailable, so the refund policy could not be applied"
 
 
+def money_is_missing(state: TriageState) -> bool:
+    """The ledger shows a failed transfer where more was debited than credited."""
+    ledger = state.get("ledger")
+    return ledger is not None and ledger.settlement_status == SettlementStatus.FAILED and ledger.discrepancy > 0
+
+
 def fraud_assessment_required(state: TriageState) -> bool:
     """Business rule, in code: when the ledger shows a failed transfer with money missing, a
     refund is possible, and a refund needs a fraud assessment. The model is not asked."""
-    ledger = state.get("ledger")
     return (
-        ledger is not None
-        and ledger.settlement_status == SettlementStatus.FAILED
-        and ledger.discrepancy > 0
+        money_is_missing(state)
         and state.get("fraud") is None
         and state.get("fraud_calls", 0) < MAX_CALLS_PER_AGENT
     )
@@ -220,6 +225,9 @@ def _after_verdict(state: TriageState) -> str:
     verdict = state.get("verdict")
     if verdict is None:
         return "escalate"
+    if verdict.decision == Decision.NO_ACTION:
+        # The ledger outranks the model: "no action" cannot close a dispute where money is missing.
+        return "escalate" if money_is_missing(state) else END
     if verdict.decision != Decision.REFUND_RECOMMENDED:
         return END
     return "policy" if state.get("fraud") is not None else "escalate"  # the policy needs a fraud assessment
