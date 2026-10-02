@@ -15,7 +15,7 @@ import os
 import statistics
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -394,3 +394,218 @@ def missing_from_trace(observations: list[dict], steps: list[str]) -> list[str]:
            for node in [step.split(":")[0].split(" ->")[0].strip()] if node in _AGENT_SERVICES}
     arrived = {o.get("name") for o in observations if o.get("type") == "AGENT"}
     return sorted(ran - arrived)
+
+
+# --- The reviewer: a person who decides what the system sent to them (ADR-0027) ------------------
+
+REVIEWERS = ["ops-ana", "ops-luis"]  # synthetic bank employees with the reviewer role
+
+
+def login_reviewer(reviewer_id: str, settings: LoginSettings) -> str:
+    """A short-lived token for a synthetic reviewer: the same signature as a customer's, plus the
+    reviewer role. The intake API checks the role on every review route."""
+    if reviewer_id not in REVIEWERS:
+        raise ValueError(f"{reviewer_id} is not a demo reviewer")
+    now = datetime.now(UTC)
+    claims = {"iss": settings.issuer, "aud": settings.audience, "sub": reviewer_id, "jti": uuid.uuid4().hex,
+              "iat": now, "exp": now + settings.lifetime, "roles": ["dispute-reviewer"]}
+    return jwt.encode(claims, settings.private_key_pem, algorithm="RS256")
+
+
+class ReviewClient:
+    """The reviewer's calls to the intake API."""
+
+    def __init__(self, base_url: str, http: httpx.Client | None = None) -> None:
+        self._http = http or httpx.Client(base_url=base_url.rstrip("/"), timeout=30)
+
+    def _get(self, token: str, path: str):
+        response = self._http.get(path, headers={"Authorization": f"Bearer {token}"})
+        response.raise_for_status()
+        return response.json()
+
+    def queue(self, token: str) -> list[dict]:
+        return self._get(token, "/v1/reviews/queue")
+
+    def dispute(self, token: str, dispute_id: str) -> dict:
+        return self._get(token, f"/v1/reviews/disputes/{dispute_id}")
+
+    def judgements(self, token: str) -> list[dict]:
+        return self._get(token, "/v1/reviews/judgements")
+
+    def follow_ups(self, token: str) -> list[dict]:
+        return self._get(token, "/v1/reviews/follow-ups")
+
+    def resolve(self, token: str, dispute_id: str, note: str, human_verdict: dict[str, bool]) -> httpx.Response:
+        return self._http.post(f"/v1/reviews/follow-ups/{dispute_id}/resolve",
+                               json={"note": note, "human_verdict": human_verdict},
+                               headers={"Authorization": f"Bearer {token}"})
+
+    def human_labels(self, token: str) -> list[dict]:
+        return self._get(token, "/v1/reviews/human-labels")
+
+    def decide(self, token: str, dispute_id: str, decision: str, note: str) -> httpx.Response:
+        return self._http.post(f"/v1/reviews/disputes/{dispute_id}/decision", json={"decision": decision, "note": note},
+                               headers={"Authorization": f"Bearer {token}"})
+
+
+JUDGE_LABELS = {True: "✅ aprobada", False: "❌ con problemas", None: "⚠️ no se pudo evaluar"}
+
+
+def judge_badge(judgement: dict | None) -> str:
+    return "— sin evaluar" if not judgement else JUDGE_LABELS[judgement.get("passed")]
+
+
+def why_a_person(result: dict | None) -> str:
+    """Why the dispute is waiting for a person, in the reviewer's language."""
+    result = result or {}
+    if reason := result.get("escalation_reason"):
+        return reason
+    failed = [c["name"] for c in (result.get("approval") or {}).get("checks", []) if not c["passed"]]
+    if failed:
+        return "reglas que no se cumplieron: " + ", ".join(failed)
+    if (result.get("verdict") or {}).get("decision") == "escalate_fraud":
+        return "riesgo de fraude: lo revisa el equipo de seguridad"
+    return "la revisión automática no terminó"
+
+
+def queue_rows(items: list[dict]) -> list[dict]:
+    rows = []
+    for item in items:
+        dispute = item["dispute"]
+        rows.append({"disputa": dispute["dispute_id"][:8], "cliente": item["customer_id"],
+                     "transferencia": dispute["transaction_id"], "monto reclamado": item["request"].get("claimed_amount"),
+                     "por qué llegó a una persona": why_a_person(dispute.get("result")),
+                     "juez": judge_badge(item.get("judgement")), "recibida": dispute["created_at"][:16].replace("T", " ")})
+    return rows
+
+
+def ledger_owed(result: dict | None) -> str | None:
+    """What the ledger showed owed when the system looked, for the reviewer's information. The
+    approval itself re-reads the ledger: this figure is never what gets paid."""
+    ledger = (result or {}).get("ledger")
+    if not ledger:
+        return None
+    from decimal import Decimal
+
+    return f"{Decimal(ledger['debited_amount']) - Decimal(ledger['credited_amount'])} {ledger.get('currency', 'COP')}"
+
+
+# Spanish, with the English name the code and the evaluation literature use.
+CRITERIA_ES = {"groundedness": "Basada en los registros (groundedness)", "completeness": "Completa (completeness)",
+               "clarity": "Clara (clarity)"}
+
+# What each criterion means, in the reviewer's words. The same definitions as the judge's rubric
+# (services/judge/rubric.py), so people and the judge answer the same questions.
+CRITERIA_HELP = {
+    "groundedness": ("Cada dato que afirma (montos, estado, causa, fechas, riesgo) coincide con los registros "
+                     "del banco, y no inventa nada. Ejemplo de ❌: “falló por fondos insuficientes” cuando el "
+                     "registro dice error de procesamiento. Decir que algo no se sabe no es un error."),
+    "completeness": ("Dice el resultado (reembolso, sin reembolso, va a una persona) y su motivo principal, o "
+                     "dice claramente qué no se sabe. No hace falta explicar plazos ni pasos de pago. Ejemplo de "
+                     "❌: “revisamos tu caso con cuidado”, sin decir qué se decidió ni por qué."),
+    "clarity": ("Un cliente sin conocimientos bancarios la entendería: sin jerga, nombres de campos ni texto "
+                "tipo código, y sin relleno que esconda la respuesta. Ser breve no es un defecto. Ejemplo de ❌: "
+                "“settlement_status=failed; delta=50000.00”."),
+}
+
+
+def judgement_rows(judgement: dict | None) -> list[dict]:
+    result = (judgement or {}).get("result") or {}
+    return [{"criterio": CRITERIA_ES[name], "resultado": "✅ cumple" if result[name]["passed"] else "❌ no cumple",
+             "razón del juez": result[name]["reason"]} for name in CRITERIA_ES if name in result]
+
+
+# --- The judge's health: calibration runs (ADR-0026) ------------------------------------------------
+
+
+def load_calibrations(results_dir: Path) -> list[dict]:
+    """One row per calibration run and split: agreement and unsafe passes, oldest first."""
+    rows = []
+    for path in sorted(results_dir.glob("*.json")):
+        try:
+            run = json.loads(path.read_text())
+        except ValueError:
+            continue
+        for split, report in run.get("report", {}).items():
+            row = {"run": run["meta"]["date"], "prompt": run["meta"].get("prompt_version", "?"),
+                   "split": "tuning" if split == "tuning" else "held-out", "cases": report["cases"],
+                   "agreement": report["overall_agreement"], "unsafe_passes": report["unsafe_passes"]}
+            for name, c in report["criteria"].items():
+                row[f"{name}_agreement"] = c["agreement"]
+                row[f"{name}_unsafe"] = c["unsafe_passes"]
+            rows.append(row)
+    return rows
+
+
+# --- Who decided, and when: the summary at the top of an outcome -----------------------------------
+
+COLOMBIA = timezone(timedelta(hours=-5), "COT")  # UTC-5 all year: Colombia has no daylight saving
+
+
+def colombia_time(iso: str | None) -> str:
+    if not iso:
+        return "—"
+    moment = datetime.fromisoformat(str(iso).replace("Z", "+00:00")).astimezone(COLOMBIA)
+    return f"el {moment:%d/%m/%Y} a las {moment:%H:%M} (hora de Colombia)"
+
+
+def decision_summary(result: dict | None) -> list[str]:
+    """Who decided what, and when, in plain words: the person, the policy, or a confirmed incident,
+    and when the money was paid. Read from the stored result, so it is what really happened."""
+    result = result or {}
+    review, approval = result.get("review"), result.get("approval") or {}
+    verdict, incident, payment = result.get("verdict") or {}, result.get("incident"), result.get("payment")
+    lines = []
+    if incident:
+        lines.append(f"⚡ **Decidida por código**, sin un modelo: cubierta por el incidente confirmado "
+                     f"{incident['incident_id']} (confirmado por {incident['confirmed_by']}) "
+                     f"{colombia_time(verdict.get('decided_at'))}.")
+    if review:
+        who, when = f"**{review['reviewer_id']}**", colombia_time(review["decided_at"])
+        if review["decision"] == "approve":
+            lines.append(f"👤 **Aprobada por una persona:** {who} {when}, por {review['amount']} COP. "
+                         f"Motivo: “{review['note']}”.")
+        else:
+            lines.append(f"👤 **Rechazada por una persona:** {who} {when}. Motivo: “{review['note']}”.")
+    elif approval.get("route") == "auto_approved":
+        lines.append(f"⚙️ **Aprobada automáticamente** por la política de reembolsos (código) "
+                     f"{colombia_time(approval.get('evaluated_at'))}, por {approval.get('approved_amount')} COP.")
+    elif approval.get("route") == "human_required" or result.get("status") == "pending_human_approval":
+        lines.append(f"👤 **Esperando la decisión de una persona** desde "
+                     f"{colombia_time(approval.get('evaluated_at') or verdict.get('decided_at'))[3:]}.")
+    elif verdict.get("decision") == "no_action" and not incident:
+        lines.append(f"📁 **Cerrada sin reembolso** por la recomendación de los agentes y la política "
+                     f"{colombia_time(verdict.get('decided_at'))}.")
+    if payment:
+        lines.append(f"💸 **Pagada** por el libro contable {colombia_time(payment['executed_at'])}: "
+                     f"{payment['amount']} {payment['currency']}, reembolso `{payment['refund_id']}`.")
+    return lines
+
+
+
+# --- The judge against people, on real disputes (ADR-0026) -------------------------------------------
+
+
+def judge_vs_people(labels: list[dict]) -> dict:
+    """How the judge compares with the people who re-assessed real disputes, per criterion.
+
+    confirmed      the judge said FAIL and the person agreed
+    false alarms   the judge said FAIL, the person said PASS
+    unsafe passes  the judge said PASS, the person said FAIL (only found through control samples)
+    """
+    per = {name: {"reviewed": 0, "agree": 0, "confirmed": 0, "false_alarms": 0, "unsafe_passes": 0}
+           for name in CRITERIA_ES}
+    kinds = {"judge_flag": 0, "control_sample": 0}
+    for label in labels:
+        kinds[label.get("kind", "judge_flag")] = kinds.get(label.get("kind", "judge_flag"), 0) + 1
+        judge = ((label.get("judgement") or {}).get("result") or {})
+        for name, counts in per.items():
+            if name not in judge or name not in (label.get("human_verdict") or {}):
+                continue
+            j, h = judge[name]["passed"], label["human_verdict"][name]
+            counts["reviewed"] += 1
+            counts["agree"] += j == h
+            counts["confirmed"] += (not j) and (not h)
+            counts["false_alarms"] += (not j) and h
+            counts["unsafe_passes"] += j and (not h)
+    return {"labels": len(labels), "kinds": kinds, "criteria": per}

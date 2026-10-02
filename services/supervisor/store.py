@@ -88,6 +88,44 @@ class DisputeStore(Protocol):
 
     async def events(self, dispute_id: UUID) -> list[dict]: ...
 
+    async def review_queue(self, limit: int = 50) -> list[DisputeRecord]:
+        """Disputes waiting for a person (pending_human_approval), oldest first (ADR-0027)."""
+
+    async def decide(self, dispute_id: UUID, result: TriageResult, note: str) -> bool:
+        """A person's decision: pending_human_approval -> the result's status, whether the run
+        finished or failed. False if the dispute is no longer waiting for a person, so two
+        reviewers cannot both decide it."""
+
+    async def flag_follow_up(self, dispute_id: UUID, reason: str, kind: str = "judge_flag") -> bool:
+        """Send a dispute to customer service, where a person re-assesses the explanation (ADR-0026).
+        `kind` is "judge_flag" (the judge found problems) or "control_sample" (a random share of
+        the judge's passes, so its unsafe passes can be measured). Never changes the dispute's
+        status or money. False if already flagged."""
+
+    async def follow_ups(self, limit: int = 50) -> list[dict]:
+        """Open follow-ups, oldest first, with the dispute's transaction, customer, and status."""
+
+    async def resolve_follow_up(self, dispute_id: UUID, reviewer_id: str, note: str,
+                                human_verdict: dict[str, bool] | None = None) -> bool:
+        """A person re-assessed the explanation: `human_verdict` is their pass/fail per criterion, a
+        human label for evaluating the judge. Nothing about the dispute changes. False if there is
+        no open follow-up."""
+
+    async def human_labels(self, limit: int = 500) -> list[dict]:
+        """Re-assessed follow-ups, newest first: the person's verdict next to the judge's, and the
+        case the judge saw. For measuring and recalibrating the judge."""
+
+    async def save_judgement(self, dispute_id: UUID, result: dict, *, passed: bool | None,
+                             prompt_version: str) -> None:
+        """Store (or replace) the LLM judge's verdict on a dispute's explanation (ADR-0026).
+        `passed` is None when the judge could not grade it; `result` then holds the error."""
+
+    async def judgement(self, dispute_id: UUID) -> dict | None:
+        """The judge's verdict on one dispute, or None if it has not been judged."""
+
+    async def judgements(self, limit: int = 50) -> list[dict]:
+        """The most recent verdicts, newest first, with the dispute's transaction and status."""
+
     async def ping(self) -> bool: ...
 
 
@@ -100,6 +138,8 @@ class InMemoryDisputeStore:
     def __init__(self) -> None:
         self._by_id: dict[UUID, DisputeRecord] = {}
         self._events: dict[UUID, list[dict]] = {}
+        self._judgements: dict[UUID, dict] = {}
+        self._follow_ups: dict[UUID, dict] = {}
 
     def _log(self, record: DisputeRecord, note: str) -> None:
         self._events.setdefault(record.dispute_id, []).append({
@@ -183,6 +223,62 @@ class InMemoryDisputeStore:
     async def events(self, dispute_id):
         return list(self._events.get(dispute_id, []))
 
+    async def review_queue(self, limit=50):
+        waiting = [r for r in self._by_id.values() if r.business_status == DisputeStatus.PENDING_HUMAN_APPROVAL]
+        return sorted(waiting, key=lambda r: r.created_at)[:limit]
+
+    async def decide(self, dispute_id, result, note):
+        record = self._by_id.get(dispute_id)
+        if record is None or record.business_status != DisputeStatus.PENDING_HUMAN_APPROVAL:
+            return False
+        return self._change(
+            dispute_id, (ExecutionStatus.FINISHED.value, ExecutionStatus.FAILED.value), note,
+            execution_status=ExecutionStatus.FINISHED, business_status=result.status,
+            customer_message=result.customer_message, result=result.model_dump(mode="json"),
+        )
+
+    async def flag_follow_up(self, dispute_id, reason, kind="judge_flag"):
+        if dispute_id in self._follow_ups or dispute_id not in self._by_id:
+            return False
+        self._follow_ups[dispute_id] = {"dispute_id": dispute_id, "reason": reason, "kind": kind,
+                                        "flagged_at": datetime.now(UTC), "resolved_by": None, "resolved_at": None,
+                                        "note": None, "human_verdict": None}
+        self._log(self._by_id[dispute_id], f"sent to customer service: {reason}")
+        return True
+
+    async def follow_ups(self, limit=50):
+        rows = sorted((f for f in self._follow_ups.values() if f["resolved_at"] is None), key=lambda f: f["flagged_at"])
+        return [f | {"transaction_id": self._by_id[f["dispute_id"]].transaction_id,
+                     "user_id": self._by_id[f["dispute_id"]].user_id,
+                     "business_status": self._by_id[f["dispute_id"]].business_status.value} for f in rows[:limit]]
+
+    async def resolve_follow_up(self, dispute_id, reviewer_id, note, human_verdict=None):
+        follow_up = self._follow_ups.get(dispute_id)
+        if follow_up is None or follow_up["resolved_at"] is not None:
+            return False
+        follow_up |= {"resolved_by": reviewer_id, "resolved_at": datetime.now(UTC), "note": note,
+                      "human_verdict": human_verdict}
+        self._log(self._by_id[dispute_id], f"customer service follow-up done by {reviewer_id}: {note}")
+        return True
+
+    async def human_labels(self, limit=500):
+        done = [f for f in self._follow_ups.values() if f["human_verdict"] is not None]
+        done.sort(key=lambda f: f["resolved_at"], reverse=True)
+        return [f | {"judgement": self._judgements.get(f["dispute_id"]),
+                     "transaction_id": self._by_id[f["dispute_id"]].transaction_id} for f in done[:limit]]
+
+    async def save_judgement(self, dispute_id, result, *, passed, prompt_version):
+        self._judgements[dispute_id] = {"dispute_id": dispute_id, "judged_at": datetime.now(UTC), "passed": passed,
+                                        "prompt_version": prompt_version, "result": result}
+
+    async def judgement(self, dispute_id):
+        return self._judgements.get(dispute_id)
+
+    async def judgements(self, limit=50):
+        rows = sorted(self._judgements.values(), key=lambda j: j["judged_at"], reverse=True)[:limit]
+        return [j | {"transaction_id": self._by_id[j["dispute_id"]].transaction_id,
+                     "business_status": self._by_id[j["dispute_id"]].business_status.value} for j in rows]
+
     async def ping(self):
         return True
 
@@ -207,6 +303,28 @@ CREATE TABLE IF NOT EXISTS disputes (
 -- The human review queue is one query: WHERE business_status = 'pending_human_approval' ORDER BY created_at
 CREATE INDEX IF NOT EXISTS disputes_by_status ON disputes (business_status, created_at);
 CREATE INDEX IF NOT EXISTS disputes_active ON disputes (updated_at) WHERE execution_status IN ('queued', 'running');
+
+CREATE TABLE IF NOT EXISTS dispute_judgements (   -- the LLM judge's verdict on the explanation (ADR-0026)
+    dispute_id      uuid PRIMARY KEY REFERENCES disputes (dispute_id) ON DELETE CASCADE,
+    judged_at       timestamptz NOT NULL DEFAULT now(),
+    prompt_version  text NOT NULL,
+    passed          boolean,          -- NULL: the judge could not grade it (see result)
+    result          jsonb NOT NULL
+);
+CREATE INDEX IF NOT EXISTS dispute_judgements_recent ON dispute_judgements (judged_at DESC);
+
+CREATE TABLE IF NOT EXISTS dispute_follow_ups (   -- sent to customer service by the LLM judge (ADR-0026)
+    dispute_id   uuid PRIMARY KEY REFERENCES disputes (dispute_id) ON DELETE CASCADE,
+    reason       text NOT NULL,
+    flagged_at   timestamptz NOT NULL DEFAULT now(),
+    resolved_by  text,
+    resolved_at  timestamptz,
+    note         text
+);
+CREATE INDEX IF NOT EXISTS dispute_follow_ups_open ON dispute_follow_ups (flagged_at) WHERE resolved_at IS NULL;
+-- Added for human labels: why it was sent, and the person's re-assessment per criterion.
+ALTER TABLE dispute_follow_ups ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'judge_flag';
+ALTER TABLE dispute_follow_ups ADD COLUMN IF NOT EXISTS human_verdict jsonb;
 
 CREATE TABLE IF NOT EXISTS dispute_events (   -- append-only audit trail of every status change
     event_id          bigserial PRIMARY KEY,
@@ -334,6 +452,97 @@ class PostgresDisputeStore:
             cursor = await conn.execute(
                 "SELECT at, execution_status, business_status, note FROM dispute_events "
                 "WHERE dispute_id = %s ORDER BY event_id", (dispute_id,))
+            return await cursor.fetchall()
+
+    async def review_queue(self, limit=50):
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                f"SELECT {_COLUMNS} FROM disputes WHERE business_status = 'pending_human_approval' "
+                "ORDER BY created_at LIMIT %s", (limit,))
+            return [_record(row) for row in await cursor.fetchall()]
+
+    async def decide(self, dispute_id, result, note):
+        from psycopg.types.json import Jsonb
+
+        return await self._change(
+            dispute_id, (ExecutionStatus.FINISHED.value, ExecutionStatus.FAILED.value), note,
+            "execution_status = 'finished', business_status = %(business_status)s, "
+            "customer_message = %(customer_message)s, result = %(result)s",
+            also="AND business_status = 'pending_human_approval'",
+            business_status=result.status.value, customer_message=result.customer_message,
+            result=Jsonb(result.model_dump(mode="json")))
+
+    async def _note(self, conn, dispute_id, note: str) -> None:
+        """An audit line that records an action without a status change."""
+        await conn.execute(
+            "INSERT INTO dispute_events (dispute_id, execution_status, business_status, note) "
+            "SELECT dispute_id, execution_status, business_status, %s FROM disputes WHERE dispute_id = %s",
+            (note, dispute_id))
+
+    async def flag_follow_up(self, dispute_id, reason, kind="judge_flag"):
+        async with self._pool.connection() as conn, conn.transaction():
+            cursor = await conn.execute(
+                "INSERT INTO dispute_follow_ups (dispute_id, reason, kind) SELECT %s, %s, %s WHERE EXISTS "
+                "(SELECT 1 FROM disputes WHERE dispute_id = %s) ON CONFLICT (dispute_id) DO NOTHING",
+                (dispute_id, reason, kind, dispute_id))
+            if cursor.rowcount != 1:
+                return False
+            await self._note(conn, dispute_id, f"sent to customer service: {reason}")
+            return True
+
+    async def follow_ups(self, limit=50):
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT f.dispute_id, f.reason, f.kind, f.flagged_at, f.resolved_by, f.resolved_at, f.note, d.transaction_id, "
+                "d.user_id, d.business_status FROM dispute_follow_ups f JOIN disputes d USING (dispute_id) "
+                "WHERE f.resolved_at IS NULL ORDER BY f.flagged_at LIMIT %s", (limit,))
+            return await cursor.fetchall()
+
+    async def resolve_follow_up(self, dispute_id, reviewer_id, note, human_verdict=None):
+        from psycopg.types.json import Jsonb
+
+        async with self._pool.connection() as conn, conn.transaction():
+            cursor = await conn.execute(
+                "UPDATE dispute_follow_ups SET resolved_by = %s, resolved_at = now(), note = %s, human_verdict = %s "
+                "WHERE dispute_id = %s AND resolved_at IS NULL",
+                (reviewer_id, note, Jsonb(human_verdict) if human_verdict is not None else None, dispute_id))
+            if cursor.rowcount != 1:
+                return False
+            await self._note(conn, dispute_id, f"customer service follow-up done by {reviewer_id}: {note}")
+            return True
+
+    async def human_labels(self, limit=500):
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT f.dispute_id, f.kind, f.reason, f.resolved_by, f.resolved_at, f.note, f.human_verdict, "
+                "d.transaction_id, to_jsonb(j) - 'dispute_id' AS judgement FROM dispute_follow_ups f "
+                "JOIN disputes d USING (dispute_id) LEFT JOIN dispute_judgements j USING (dispute_id) "
+                "WHERE f.human_verdict IS NOT NULL ORDER BY f.resolved_at DESC LIMIT %s", (limit,))
+            return await cursor.fetchall()
+
+    async def save_judgement(self, dispute_id, result, *, passed, prompt_version):
+        from psycopg.types.json import Jsonb
+
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO dispute_judgements (dispute_id, prompt_version, passed, result) VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (dispute_id) DO UPDATE SET judged_at = now(), prompt_version = EXCLUDED.prompt_version, "
+                "passed = EXCLUDED.passed, result = EXCLUDED.result",
+                (dispute_id, prompt_version, passed, Jsonb(result)))
+
+    async def judgement(self, dispute_id):
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT dispute_id, judged_at, passed, prompt_version, result FROM dispute_judgements WHERE dispute_id = %s",
+                (dispute_id,))
+            return await cursor.fetchone()
+
+    async def judgements(self, limit=50):
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT j.dispute_id, j.judged_at, j.passed, j.prompt_version, j.result, d.transaction_id, "
+                "d.business_status FROM dispute_judgements j JOIN disputes d USING (dispute_id) "
+                "ORDER BY j.judged_at DESC LIMIT %s", (limit,))
             return await cursor.fetchall()
 
     async def ping(self):

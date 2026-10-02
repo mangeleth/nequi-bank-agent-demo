@@ -167,3 +167,79 @@ async def test_settle_moves_a_finished_approved_dispute_on_exactly_once(store):
     assert (stored.execution_status, stored.business_status) == (ExecutionStatus.FINISHED, DisputeStatus.REFUND_PAID)
     assert stored.customer_message.endswith("paid back to your account.")
     assert [event["note"] for event in await store.events(record.dispute_id)][-1] == "refund paid: RF-1"
+
+
+async def test_a_judgement_is_stored_replaced_and_listed_with_its_dispute(store):
+    record, _ = await new_dispute(store)
+    assert await store.judgement(record.dispute_id) is None
+
+    verdict = {"groundedness": {"passed": False, "reason": "invented cause"},
+               "completeness": {"passed": True, "reason": "ok"}, "clarity": {"passed": True, "reason": "ok"}}
+    await store.save_judgement(record.dispute_id, verdict, passed=False, prompt_version="v3")
+    await store.save_judgement(record.dispute_id, verdict, passed=False, prompt_version="v4")  # judged again
+
+    stored = await store.judgement(record.dispute_id)
+    assert (stored["passed"], stored["prompt_version"]) == (False, "v4")
+    assert stored["result"]["groundedness"]["reason"] == "invented cause"
+    listed = await store.judgements()
+    assert [(j["dispute_id"], j["transaction_id"], j["business_status"]) for j in listed] == [
+        (record.dispute_id, REQUEST.transaction_id, "received")]
+
+
+async def test_the_review_queue_and_a_decision_that_only_one_reviewer_can_make(store):
+    waiting_finished, _ = await new_dispute(store)
+    await store.start(waiting_finished.dispute_id, "checking")
+    await store.finish(waiting_finished.dispute_id, result(waiting_finished.dispute_id, DisputeStatus.PENDING_HUMAN_APPROVAL))
+    waiting_failed, _ = await new_dispute(store)
+    await store.start(waiting_failed.dispute_id, "checking")
+    await store.fail(waiting_failed.dispute_id, "a person will look", "the run failed")  # also waits for a person
+    not_waiting, _ = await new_dispute(store)
+
+    queue = await store.review_queue()
+    assert [r.dispute_id for r in queue] == [waiting_finished.dispute_id, waiting_failed.dispute_id]  # oldest first
+
+    decided = result(waiting_failed.dispute_id, DisputeStatus.REJECTED).model_copy(
+        update={"customer_message": "A person reviewed your dispute."})
+    assert await store.decide(waiting_failed.dispute_id, decided, "reviewed by ops-ana: reject")
+    assert not await store.decide(waiting_failed.dispute_id, decided, "a second reviewer")  # already decided
+    assert not await store.decide(not_waiting.dispute_id, decided, "not waiting for a person")
+
+    stored = await store.load(waiting_failed.dispute_id)
+    assert (stored.execution_status, stored.business_status) == (ExecutionStatus.FINISHED, DisputeStatus.REJECTED)
+    assert [e["note"] for e in await store.events(waiting_failed.dispute_id)][-1] == "reviewed by ops-ana: reject"
+    assert [r.dispute_id for r in await store.review_queue()] == [waiting_finished.dispute_id]
+
+
+async def test_a_dispute_sent_to_customer_service_is_flagged_once_and_resolved_once(store):
+    record, _ = await new_dispute(store)
+    assert await store.flag_follow_up(record.dispute_id, "the judge found an invented cause")
+    assert not await store.flag_follow_up(record.dispute_id, "flagged twice")
+
+    open_ = await store.follow_ups()
+    assert [(f["dispute_id"], f["reason"], f["user_id"]) for f in open_] == [
+        (record.dispute_id, "the judge found an invented cause", "user-1001")]
+    assert (await store.load(record.dispute_id)).business_status == DisputeStatus.RECEIVED  # status untouched
+
+    assert await store.resolve_follow_up(record.dispute_id, "ops-ana", "called the customer and corrected it")
+    assert not await store.resolve_follow_up(record.dispute_id, "ops-luis", "again")
+    assert await store.follow_ups() == []
+    notes = [e["note"] for e in await store.events(record.dispute_id)]
+    assert notes[-2:] == ["sent to customer service: the judge found an invented cause",
+                          "customer service follow-up done by ops-ana: called the customer and corrected it"]
+
+
+async def test_a_persons_reassessment_is_stored_as_a_human_label_next_to_the_judges_verdict(store):
+    record, _ = await new_dispute(store)
+    judge = {"groundedness": {"passed": False, "reason": "invented cause"},
+             "completeness": {"passed": True, "reason": "ok"}, "clarity": {"passed": True, "reason": "ok"}}
+    await store.save_judgement(record.dispute_id, judge, passed=False, prompt_version="v3")
+    await store.flag_follow_up(record.dispute_id, "groundedness: invented cause", kind="judge_flag")
+    assert await store.human_labels() == []  # not re-assessed yet
+
+    human = {"groundedness": True, "completeness": True, "clarity": True}  # the person disagrees: a false alarm
+    assert await store.resolve_follow_up(record.dispute_id, "ops-ana", "the cause is in the record", human)
+
+    (label,) = await store.human_labels()
+    assert (label["kind"], label["resolved_by"], label["human_verdict"]) == ("judge_flag", "ops-ana", human)
+    assert label["judgement"]["result"]["groundedness"]["passed"] is False  # the judge's, kept beside it
+    assert (await store.load(record.dispute_id)).business_status == DisputeStatus.RECEIVED  # nothing changed

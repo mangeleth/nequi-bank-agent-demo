@@ -88,3 +88,15 @@ def payment_needs_person_message(ledger: LedgerReconciliation | None) -> str:
 def incident_sentence(incident: KnownIncident) -> str:
     """Said only when operations confirmed the incident (ADR-0022); its title is a fact."""
     return f"This transfer was affected by a confirmed problem on our side: {incident.title.rstrip('.')}."
+
+
+def human_approved_message(ledger: LedgerReconciliation | None, amount) -> str:
+    """After a person approved it (ADR-0027). Approved, not paid: the payer has not confirmed yet."""
+    action = (f"A person reviewed your dispute and approved a refund of {amount} "
+              f"{ledger.currency if ledger else 'COP'}. It has not been paid yet.")
+    return f"{_records(ledger)} {action}" if ledger is not None else action
+
+
+def human_rejected_message(ledger: LedgerReconciliation | None) -> str:
+    action = "A person reviewed your dispute and decided that no refund is due."
+    return f"{_records(ledger)} {action}" if ledger is not None else action

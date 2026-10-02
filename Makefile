@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: test-db test-servicebus venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster failure-tests failure-test-kill redis-image postgres-image postgres-password ledger-password ledger-db incident-refunds demo-idp-publish ui ui-publish ui-unpublish run-ui signing-key signing-grant signing-key-publish servicebus-create sb-grant demo-reset test guard-clean validate build push deploy smoke release
+.PHONY: test-db test-servicebus venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster judge-calibrate judge-labels-export failure-tests failure-test-kill redis-image postgres-image postgres-password ledger-password ledger-db incident-refunds demo-idp-publish ui ui-publish ui-unpublish run-ui signing-key signing-grant signing-key-publish servicebus-create sb-grant demo-reset test guard-clean validate build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -396,6 +396,18 @@ EVAL_LABEL ?= local
 eval:
 	$(LANGFUSE_KEYS) .venv/bin/python -m evals.run --url $(SUPERVISOR_URL) --label $(EVAL_LABEL)
 
+## Calibrate the LLM judge against the labelled cases (ADR-0026). Calls the real model (~$0.05).
+judge-calibrate:
+	.venv/bin/python -m evals.judge_calibrate
+
+## Export people's re-assessments of real disputes as calibration cases (ADR-0026)
+judge-labels-export:
+	@mkdir -p .local
+	@kubectl port-forward -n $(K8S_NAMESPACE) svc/supervisor 18004:80 >/dev/null 2>&1 & echo $$! > .local/port-forward.pid
+	@sleep 4
+	@SUPERVISOR_URL=http://127.0.0.1:18004 .venv/bin/python -m evals.judge_labels_export; status=$$?; \
+		kill $$(cat .local/port-forward.pid) 2>/dev/null; rm -f .local/port-forward.pid; exit $$status
+
 ## Evaluate the system deployed on AKS, through a temporary port-forward to the supervisor
 eval-cluster:
 	@mkdir -p .local
@@ -468,8 +480,11 @@ deploy:
 
 ## Call the service from inside the cluster via its ClusterIP DNS name
 SMOKE_PATH = $(if $(filter demo-ui,$(SERVICE)),/_stcore/health,/healthz)
+## A service without a Service (a worker: no one can call it) is checked from inside its own pod
 smoke:
-	scripts/smoke.sh $(K8S_NAMESPACE) http://$(SERVICE)$(SMOKE_PATH)
+	@if [ -f k8s/$(SERVICE)/service.yaml ]; then scripts/smoke.sh $(K8S_NAMESPACE) http://$(SERVICE)$(SMOKE_PATH); \
+	else kubectl exec -n $(K8S_NAMESPACE) deploy/$(SERVICE) -- python -c \
+		"import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/healthz').read().decode())"; fi
 
 ## End-to-end check of the deployed Fraud Agent: log in as a synthetic customer and dispute
 ## their failed transfer, from inside the cluster

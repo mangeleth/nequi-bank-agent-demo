@@ -145,9 +145,12 @@ def test_the_streamlit_page_renders_with_the_real_reports(monkeypatch):
     page = AppTest.from_file(str(Path(__file__).resolve().parent.parent / "services/demo_ui/app.py"), default_timeout=30).run()
 
     assert not page.exception
-    assert [tab.label for tab in page.tabs] == ["📱 App del cliente", "📊 Tablero de evaluación", "🗺️ Guion de la demo"]
+    assert [tab.label for tab in page.tabs] == ["📱 App del cliente", "👤 Revisión (supervisor)",
+                                                "📊 Tablero de evaluación"]  # no demo script (#18)
+    assert any("La revisión no está disponible" in w.value for w in page.warning)  # no API here: no crash
     metrics = {m.label: m.value for m in page.metric}
-    assert set(metrics) == {"Solicitudes evaluadas", "Solicitudes exitosas", "Tasa de éxito", "Costo total", "Costo por éxito"}
+    assert {"Solicitudes evaluadas", "Solicitudes exitosas", "Tasa de éxito", "Costo total", "Costo por éxito"} <= set(metrics)
+    assert {"Acuerdo · held-out", "Aprobaciones inseguras · held-out"} <= set(metrics)  # the judge's health
     assert metrics["Tasa de éxito"].endswith("%") and metrics["Costo total"].startswith("$")
 
 
@@ -254,3 +257,119 @@ def test_the_scenario_table_says_what_decided_each_one(tmp_path):
     paths = {row["escenario"]: (row["camino"], row["resultado"]) for row in logic.latest_scenarios(tmp_path)}
     assert paths == {"agents": ("🤖 agentes", "refund_paid"), "incident": ("⚡ incidente", "refund_paid"),
                      "duplicate": ("— sin revisión", "refund_paid"), "refused": ("— sin revisión", "—")}
+
+
+# --- The reviewer (ADR-0027) and the judge's health (ADR-0026) ------------------------------------
+
+
+def test_a_reviewer_token_from_the_ui_is_accepted_only_as_a_reviewer():
+    from shared.auth import verify_reviewer_token
+
+    token = logic.login_reviewer("ops-ana", LOGIN)
+    assert verify_reviewer_token(token, SETTINGS).reviewer_id == "ops-ana"
+    with pytest.raises(ValueError):
+        logic.login_reviewer("user-1001", LOGIN)
+
+
+def test_the_reviewer_works_the_queue_through_the_real_intake_api():
+    from tests.test_review import TO_A_PERSON
+    from tests.test_supervisor import FakeSpecialists
+
+    specialists = FakeSpecialists(debited="450000.00")
+    with TestClient(_supervisor(specialists, script=TO_A_PERSON)) as http:
+        customer = logic.IntakeClient("http://supervisor", http=http)
+        token = logic.login("user-1001", LOGIN)
+        submitted = customer.submit(token, logic.find_transaction("user-1001", "TX-20261001000002"), "no llegó")
+        _follow(customer, token, submitted.json()["dispute_id"])
+
+        reviewer = logic.ReviewClient("http://supervisor", http=http)
+        rtoken = logic.login_reviewer("ops-ana", LOGIN)
+        queue = reviewer.queue(rtoken)
+        rows = logic.queue_rows(queue)
+        decided = reviewer.decide(rtoken, queue[0]["dispute"]["dispute_id"], "approve", "verified in the ledger")
+        view, _ = _follow(customer, token, submitted.json()["dispute_id"])
+
+    assert rows[0]["cliente"] == "user-1001" and "under_amount_limit" in rows[0]["por qué llegó a una persona"]
+    assert rows[0]["juez"] == "— sin evaluar"
+    assert decided.status_code == 200 and view["status"] == "refund_paid"
+    assert view["result"]["approval"]["approved_by"] == "ops-ana"
+
+
+def test_judgement_rows_and_badges_in_spanish():
+    judgement = {"passed": False, "prompt_version": "v3", "result": {
+        "groundedness": {"passed": False, "reason": "invented cause"},
+        "completeness": {"passed": True, "reason": "ok"}, "clarity": {"passed": True, "reason": "ok"}}}
+    assert logic.judge_badge(judgement) == "❌ con problemas" and logic.judge_badge(None) == "— sin evaluar"
+    assert logic.judgement_rows(judgement)[0] == {"criterio": "Basada en los registros (groundedness)", "resultado": "❌ no cumple",
+                                                  "razón del juez": "invented cause"}
+
+
+def test_the_judge_health_reads_every_calibration_run():
+    rows = logic.load_calibrations(Path("evals/judge/results"))
+    assert {r["prompt"] for r in rows} >= {"v1", "v2", "v3"}
+    assert {r["split"] for r in rows} == {"tuning", "held-out"}
+    assert all(0 <= r["agreement"] <= 1 and r["unsafe_passes"] >= 0 for r in rows)
+
+
+def test_the_summary_says_who_decided_and_when_in_colombia_time():
+    reviewed = {"review": {"decision": "approve", "reviewer_id": "ops-ana", "note": "verificado en el libro",
+                           "decided_at": "2026-10-02T18:32:53Z", "amount": "450000.00"},
+                "approval": {"route": "human_approved", "approved_amount": "450000.00"},
+                "payment": {"amount": "450000.00", "currency": "COP", "refund_id": "RF-7012",
+                            "executed_at": "2026-10-02T18:32:54Z"}}
+    approved, paid = logic.decision_summary(reviewed)
+    assert "Aprobada por una persona" in approved and "**ops-ana**" in approved
+    assert "el 02/10/2026 a las 13:32 (hora de Colombia)" in approved  # 18:32 UTC is 13:32 in Bogotá
+    assert "450000.00 COP" in approved and "verificado en el libro" in approved
+    assert "RF-7012" in paid and "13:32" in paid
+
+    rejected = logic.decision_summary({"review": {"decision": "reject", "reviewer_id": "ops-luis", "note": "ya llegó",
+                                                  "decided_at": "2026-10-02T15:00:00Z"}})
+    assert rejected == ["👤 **Rechazada por una persona:** **ops-luis** el 02/10/2026 a las 10:00 (hora de Colombia). "
+                        "Motivo: “ya llegó”."]
+
+
+def test_the_summary_for_the_policy_and_for_an_incident():
+    auto = logic.decision_summary({"approval": {"route": "auto_approved", "approved_amount": "50000.00",
+                                                "evaluated_at": "2026-10-02T17:00:00Z"}})
+    assert auto[0].startswith("⚙️ **Aprobada automáticamente**") and "12:00 (hora de Colombia)" in auto[0]
+    covered = logic.decision_summary({"incident": {"incident_id": "INC-20261001-01", "confirmed_by": "operations-lead"},
+                                      "verdict": {"decided_at": "2026-10-02T17:00:00Z"}})
+    assert "INC-20261001-01" in covered[0] and "sin un modelo" in covered[0]
+    assert logic.decision_summary(None) == []
+
+
+def test_judge_vs_people_counts_confirmations_false_alarms_and_unsafe_passes():
+    def label(kind, judge, human):
+        names = ("groundedness", "completeness", "clarity")
+        return {"kind": kind, "human_verdict": dict(zip(names, human, strict=True)),
+                "judgement": {"result": {n: {"passed": j, "reason": "r"} for n, j in zip(names, judge, strict=True)}}}
+
+    stats = logic.judge_vs_people([
+        label("judge_flag", (False, True, True), (False, True, True)),  # the judge was right
+        label("judge_flag", (False, True, True), (True, True, True)),  # a false alarm
+        label("control_sample", (True, True, True), (False, True, True)),  # an unsafe pass, found by sampling
+    ])
+    g = stats["criteria"]["groundedness"]
+    assert (g["reviewed"], g["agree"], g["confirmed"], g["false_alarms"], g["unsafe_passes"]) == (3, 1, 1, 1, 1)
+    assert stats["kinds"] == {"judge_flag": 2, "control_sample": 1}
+    assert stats["criteria"]["clarity"]["agree"] == 3
+
+
+def test_the_criteria_are_explained_with_the_same_meaning_as_the_judges_rubric():
+    from services.judge.rubric import Criterion
+
+    assert set(logic.CRITERIA_HELP) == set(logic.CRITERIA_ES) == {c.value for c in Criterion}
+    assert "inventa" in logic.CRITERIA_HELP["groundedness"] and "no se sabe" in logic.CRITERIA_HELP["groundedness"]
+    assert "motivo" in logic.CRITERIA_HELP["completeness"] and "jerga" in logic.CRITERIA_HELP["clarity"]
+
+
+def test_the_dashboard_explains_the_three_criteria(monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setenv("EVAL_RESULTS_DIR", "evals/results")
+    page = AppTest.from_file(str(Path(__file__).resolve().parent.parent / "services/demo_ui/app.py"),
+                             default_timeout=30).run()
+    text = " ".join(m.value for m in page.markdown)
+    for name in ("Basada en los registros (groundedness)", "Completa (completeness)", "Clara (clarity)"):
+        assert f"**{name}:**" in text

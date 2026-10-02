@@ -1,0 +1,99 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: judge
+  namespace: disputes
+  labels:
+    app.kubernetes.io/name: judge
+    app.kubernetes.io/part-of: dispute-triage
+  annotations:
+    # Workload Identity: federated to id-judge, which may call Azure OpenAI and read the dispute
+    # database's password. No queues, no signing key, no ledger.
+    azure.workload.identity/client-id: ${WI_CLIENT_ID}
+automountServiceAccountToken: false
+---
+# The judge worker has no Service: nothing can send it a request. Its work arrives from the
+# judge-jobs stream in Redis (ADR-0026).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: judge
+  namespace: disputes
+  labels:
+    app.kubernetes.io/name: judge
+    app.kubernetes.io/part-of: dispute-triage
+spec:
+  replicas: 1 # enough for a demo; more replicas share the stream through the consumer group
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: judge
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: judge
+        app.kubernetes.io/part-of: dispute-triage
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: judge
+      automountServiceAccountToken: false
+      # A job interrupted by a deploy is not acknowledged, so it is reclaimed and judged again.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: judge
+          image: ${IMAGE}
+          ports:
+            - name: http
+              containerPort: 8000 # health endpoints only
+          envFrom:
+            - configMapRef:
+                name: judge
+          resources:
+            requests:
+              cpu: 50m
+              memory: 192Mi
+            limits:
+              memory: 384Mi
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 45
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http } # fails if the job consumer has stopped
+            periodSeconds: 20
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: secrets
+              mountPath: /mnt/secrets
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: judge-secrets

@@ -1,0 +1,8 @@
+langchain-core>=1.0,<2
+langchain-openai>=1.0,<2
+azure-identity>=1.19
+redis>=5,<9
+psycopg[binary,pool]>=3.2,<4
+httpx>=0.28
+fastapi>=0.140,<1
+uvicorn>=0.50,<1

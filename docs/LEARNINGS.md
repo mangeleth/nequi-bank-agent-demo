@@ -207,6 +207,23 @@ the ledger's real reply, so the client's parsing of that reply was never tested.
 only a fake. And design the money path so that a bug in reading an answer fails safe: the
 unknown case must never pay twice and never claim "paid".
 
+## 12. The judge graded an explanation against the future (Milestone 8)
+
+**What happened.** The LLM judge runs in the background after a dispute finishes, and by then the
+refund has usually been paid. It read the ledger, saw `reversed`, and failed a correct explanation
+("the transfer failed and nothing reached the recipient").
+
+**First fix, and why it was not enough.** The judge worker rebuilt the transaction as it was when
+the explanation was written. But the note it added named the later refund, and the judge then
+read "refund recommended" as contradicting "already paid".
+
+**What changed.** The evidence describes only the moment the explanation was written; nothing that
+happened later appears in it. All three criteria then passed, with the right reasons.
+
+**The lesson.** An evaluator needs the evidence from the same moment as the thing it evaluates,
+and must not be told the future, even helpfully. The same applies to human reviewers and to
+offline evaluations replayed later (issue #6).
+
 # Part 2: design principles (study notes)
 
 ## A. Know when not to use an agent: the known-incident fast path

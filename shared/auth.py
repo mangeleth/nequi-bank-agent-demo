@@ -39,6 +39,20 @@ class CallerIdentity(BaseModel):
     transaction_id: str | None = None  # the one transaction such a token may be used for
 
 
+REVIEWER_ROLE = "dispute-reviewer"
+
+
+class ReviewerIdentity(BaseModel):
+    """A bank employee who reviews disputes the system sent to a person (ADR-0027). Proven by a
+    verified token that carries the reviewer role; a customer's token never does."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    reviewer_id: str = Field(pattern=r"^ops-[a-z0-9-]{2,40}$")
+    token_id: str
+    expires_at: datetime
+
+
 @dataclass(frozen=True)
 class AuthSettings:
     issuer: str
@@ -79,6 +93,26 @@ def _named_issuer(token: str) -> str | None:
         return jwt.decode(token, options={"verify_signature": False}).get("iss")
     except jwt.InvalidTokenError:
         return None
+
+
+def verify_reviewer_token(token: str, settings: AuthSettings) -> ReviewerIdentity:
+    """Verify a reviewer's token: the same checks as a customer's (signature with a pinned
+    algorithm, issuer, audience, expiry), plus the reviewer role. Raises AuthError otherwise."""
+    if _named_issuer(token) != settings.issuer:
+        raise AuthError("token rejected: issuer is not trusted")
+    try:
+        claims = jwt.decode(token, settings.public_key, algorithms=[settings.algorithm], issuer=settings.issuer,
+                            audience=settings.audience, leeway=settings.leeway_seconds,
+                            options={"require": REQUIRED_CLAIMS})
+        roles = claims.get("roles")
+        if not isinstance(roles, list) or REVIEWER_ROLE not in roles:
+            raise AuthError("token rejected: not a reviewer")
+        return ReviewerIdentity(reviewer_id=claims["sub"], token_id=claims["jti"],
+                                expires_at=datetime.fromtimestamp(claims["exp"], tz=UTC))
+    except AuthError:
+        raise
+    except (jwt.InvalidTokenError, ValueError, TypeError, KeyError) as exc:
+        raise AuthError(f"token rejected: {type(exc).__name__}") from exc
 
 
 def verify_token(token: str, settings: AuthSettings | Sequence[AuthSettings]) -> CallerIdentity:

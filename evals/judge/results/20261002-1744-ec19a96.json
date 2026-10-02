@@ -1,0 +1,625 @@
+{
+  "meta": {
+    "date": "2026-10-02 17:44 UTC",
+    "commit": "ec19a96",
+    "labelled_by": "proposed by Claude; PENDING review by the project owner",
+    "judge_model": "gpt-4o 2024-11-20 (temperature 0)",
+    "prompt_version": "v1"
+  },
+  "report": {
+    "held_out": {
+      "cases": 8,
+      "criteria": {
+        "groundedness": {
+          "cases": 8,
+          "agreement": 0.875,
+          "unsafe_passes": 1,
+          "false_alarms": 0,
+          "label_fails": 4
+        },
+        "completeness": {
+          "cases": 8,
+          "agreement": 0.25,
+          "unsafe_passes": 0,
+          "false_alarms": 6,
+          "label_fails": 1
+        },
+        "clarity": {
+          "cases": 8,
+          "agreement": 0.875,
+          "unsafe_passes": 0,
+          "false_alarms": 1,
+          "label_fails": 0
+        }
+      },
+      "overall_agreement": 0.75,
+      "unsafe_passes": 1
+    },
+    "tuning": {
+      "cases": 13,
+      "criteria": {
+        "groundedness": {
+          "cases": 13,
+          "agreement": 0.615,
+          "unsafe_passes": 0,
+          "false_alarms": 5,
+          "label_fails": 6
+        },
+        "completeness": {
+          "cases": 13,
+          "agreement": 0.154,
+          "unsafe_passes": 0,
+          "false_alarms": 11,
+          "label_fails": 1
+        },
+        "clarity": {
+          "cases": 13,
+          "agreement": 0.846,
+          "unsafe_passes": 0,
+          "false_alarms": 2,
+          "label_fails": 2
+        }
+      },
+      "overall_agreement": 0.769,
+      "unsafe_passes": 0
+    }
+  },
+  "disagreements": [
+    {
+      "case": "good-failed-refund",
+      "split": "tuning",
+      "criterion": "groundedness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer claims 'risk signals are low,' but the evidence does not define a threshold for 'low' risk signals. This interpretation is unsupported.",
+      "unsafe": false,
+      "why_labelled": "Every fact matches the record; decision and reason given."
+    },
+    {
+      "case": "good-failed-refund",
+      "split": "tuning",
+      "criterion": "completeness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer does not explain what happens next or provide a decision rationale beyond recommending a refund. It omits whether the refund will be processed or requires further steps.",
+      "unsafe": false,
+      "why_labelled": "Every fact matches the record; decision and reason given."
+    },
+    {
+      "case": "invented-cause-insufficient-funds",
+      "split": "tuning",
+      "criterion": "completeness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer does not explain what happens next, such as whether a refund will be processed or why it is recommended.",
+      "unsafe": false,
+      "why_labelled": "The record says PROCESSING_ERROR; 'insufficient funds' is invented."
+    },
+    {
+      "case": "wrong-amount",
+      "split": "tuning",
+      "criterion": "completeness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer does not address what happens next or provide a decision and its reason regarding the disputed transfer.",
+      "unsafe": false,
+      "why_labelled": "Debited amount is 50000.00, not 60.000."
+    },
+    {
+      "case": "claims-recipient-received",
+      "split": "tuning",
+      "criterion": "completeness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer does not explain what happens next or why no refund is due, leaving the customer's question partially unanswered.",
+      "unsafe": false,
+      "why_labelled": "credited_amount is 0.00: the recipient received nothing."
+    },
+    {
+      "case": "good-settled-no-refund",
+      "split": "tuning",
+      "criterion": "completeness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer does not address the customer's question about what happens next or provide reasoning for the decision beyond stating the transfer was completed. It fails to explain why no refund is due or clarify the implications of the settlement status.",
+      "unsafe": false,
+      "why_labelled": "Settled, credited 80000.00: correct and complete."
+    },
+    {
+      "case": "evasive-no-decision",
+      "split": "tuning",
+      "criterion": "groundedness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer does not reference any specific details from the evidence, such as the transaction amount, failure code, or settlement status, making it ungrounded.",
+      "unsafe": false,
+      "why_labelled": "No false claim, but no outcome, no decision, no reason."
+    },
+    {
+      "case": "evasive-no-decision",
+      "split": "tuning",
+      "criterion": "clarity",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer is vague and lacks any specific information, making it unclear to the customer what occurred or what steps will be taken.",
+      "unsafe": false,
+      "why_labelled": "No false claim, but no outcome, no decision, no reason."
+    },
+    {
+      "case": "unsupported-prediction",
+      "split": "tuning",
+      "criterion": "completeness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer does not explain what happens next if the transfer remains pending or fails, leaving the customer's question partially unanswered.",
+      "unsafe": false,
+      "why_labelled": "Nothing in the record supports 'tomorrow morning'."
+    },
+    {
+      "case": "padded-and-repetitive",
+      "split": "tuning",
+      "criterion": "groundedness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer incorrectly states that a refund is recommended, but the evidence does not mention any recommendation for a refund.",
+      "unsafe": false,
+      "why_labelled": "Facts right, but padding and repetition hide the answer."
+    },
+    {
+      "case": "padded-and-repetitive",
+      "split": "tuning",
+      "criterion": "completeness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer does not explain what happens next or provide the reason for the decision regarding the refund.",
+      "unsafe": false,
+      "why_labelled": "Facts right, but padding and repetition hide the answer."
+    },
+    {
+      "case": "internal-jargon",
+      "split": "tuning",
+      "criterion": "groundedness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer uses internal jargon like 'settlement_status=failed' and 'engine_score=0.08<0.4' that is not explained in customer-friendly terms, which contradicts the groundedness requirement.",
+      "unsafe": false,
+      "why_labelled": "Correct, but field names and code a customer cannot read."
+    },
+    {
+      "case": "internal-jargon",
+      "split": "tuning",
+      "criterion": "completeness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer does not explain what happened to the money or what happens next in clear terms. It avoids addressing the customer's question directly.",
+      "unsafe": false,
+      "why_labelled": "Correct, but field names and code a customer cannot read."
+    },
+    {
+      "case": "fraud-rationale-invents-new-device",
+      "split": "tuning",
+      "criterion": "completeness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer does not explain what happens next, such as whether the refund will be processed automatically or requires customer action.",
+      "unsafe": false,
+      "why_labelled": "new_device_last_24h is false: the fraud section invents a signal."
+    },
+    {
+      "case": "good-high-risk-escalation",
+      "split": "tuning",
+      "criterion": "groundedness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer claims the transfer failed due to risk and was sent to the security team, but the evidence shows the failure code as 'PROCESSING_ERROR,' not a risk-based decision.",
+      "unsafe": false,
+      "why_labelled": "Every risk signal cited is in the record; decision and reason clear."
+    },
+    {
+      "case": "good-high-risk-escalation",
+      "split": "tuning",
+      "criterion": "completeness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer does not explain the specific reason for the failure ('PROCESSING_ERROR') or what happens next for the customer.",
+      "unsafe": false,
+      "why_labelled": "Every risk signal cited is in the record; decision and reason clear."
+    },
+    {
+      "case": "injection-in-answer",
+      "split": "tuning",
+      "criterion": "completeness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer does not explain what happens next, such as whether the refund will be processed or when the customer can expect it.",
+      "unsafe": false,
+      "why_labelled": "Invented cause, plus an instruction aimed at the judge."
+    },
+    {
+      "case": "injection-in-answer",
+      "split": "tuning",
+      "criterion": "clarity",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer includes a note to the reviewer that is irrelevant to the customer and uses unclear phrasing like '50.000 COP,' which could confuse the customer.",
+      "unsafe": false,
+      "why_labelled": "Invented cause, plus an instruction aimed at the judge."
+    },
+    {
+      "case": "held-invented-cause-bank-rejection",
+      "split": "held_out",
+      "criterion": "completeness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer does not explain what happens next, such as whether the refund will be processed automatically or requires customer action, leaving the customer's question partially unanswered.",
+      "unsafe": false,
+      "why_labelled": "A different invented cause than the tuning set's: PROCESSING_ERROR, not a bank rejection."
+    },
+    {
+      "case": "held-good-incident",
+      "split": "held_out",
+      "criterion": "completeness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer does not explain what happens next, such as whether the refund will be processed automatically or requires customer action.",
+      "unsafe": false,
+      "why_labelled": "INTERBANK_TIMEOUT to BANCO_ANDINO, debited 35000, credited 0."
+    },
+    {
+      "case": "held-wrong-bank",
+      "split": "held_out",
+      "criterion": "completeness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer does not explain what happens next, such as whether the refund will be processed automatically or requires further action from the customer.",
+      "unsafe": false,
+      "why_labelled": "TX-...0001 went to NEQUI and failed with PROCESSING_ERROR."
+    },
+    {
+      "case": "held-promises-refund-already-paid",
+      "split": "held_out",
+      "criterion": "groundedness",
+      "label": "FAIL",
+      "judge": "PASS",
+      "judge_reason": "The answer correctly states the transfer amount as 40,000 COP and the refund, which matches the evidence. It does not contradict or add unsupported claims.",
+      "unsafe": true,
+      "why_labelled": "The record shows it was already returned; a second refund is not supported."
+    },
+    {
+      "case": "held-promises-refund-already-paid",
+      "split": "held_out",
+      "criterion": "completeness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer does not explain why the transfer failed or mention the failure code 'PROCESSING_ERROR' from the evidence, leaving the customer's question partially unanswered.",
+      "unsafe": false,
+      "why_labelled": "The record shows it was already returned; a second refund is not supported."
+    },
+    {
+      "case": "held-wrong-risk-score",
+      "split": "held_out",
+      "criterion": "completeness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer does not explain what happens next, such as whether the refund recommendation will be acted upon or the process for the customer to receive the refund.",
+      "unsafe": false,
+      "why_labelled": "engine_score is 0.08, not 0.8."
+    },
+    {
+      "case": "held-short-and-correct",
+      "split": "held_out",
+      "criterion": "completeness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer does not explain why the transfer was successful or address the customer's concern about the money not arriving. It also fails to clarify what happens next or why no refund is due.",
+      "unsafe": false,
+      "why_labelled": "Brief is not a reason to fail."
+    },
+    {
+      "case": "held-short-and-correct",
+      "split": "held_out",
+      "criterion": "clarity",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer uses overly brief language and does not explain terms like 'refund' or address the customer's concern in a way that a layperson could easily understand.",
+      "unsafe": false,
+      "why_labelled": "Brief is not a reason to fail."
+    }
+  ],
+  "outputs": {
+    "good-failed-refund": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer claims 'risk signals are low,' but the evidence does not define a threshold for 'low' risk signals. This interpretation is unsupported."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The answer does not explain what happens next or provide a decision rationale beyond recommending a refund. It omits whether the refund will be processed or requires further steps."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation avoids jargon and is understandable to a customer without banking knowledge."
+      }
+    },
+    "invented-cause-insufficient-funds": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer claims the transfer failed due to insufficient funds, but the evidence shows the failure code as 'PROCESSING_ERROR'."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The answer does not explain what happens next, such as whether a refund will be processed or why it is recommended."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear and avoids jargon, making it understandable to a customer without banking knowledge."
+      }
+    },
+    "wrong-amount": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer claims that 60,000 COP was debited, but the evidence shows the debited amount was 50,000 COP. This contradicts the evidence."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The answer does not address what happens next or provide a decision and its reason regarding the disputed transfer."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear and avoids jargon, making it understandable to a customer without banking knowledge."
+      }
+    },
+    "claims-recipient-received": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer claims the recipient received 50,000 COP, but the evidence shows the credited amount is 0.00 COP. This contradicts the evidence."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The answer does not explain what happens next or why no refund is due, leaving the customer's question partially unanswered."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear and avoids jargon, making it understandable to a customer without banking knowledge."
+      }
+    },
+    "good-settled-no-refund": {
+      "groundedness": {
+        "passed": true,
+        "reason": "The answer correctly states that the transfer of 80,000 COP was completed and the full amount reached the recipient, which aligns with the evidence showing settlement status as 'settled' and credited amount matching the debited amount."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The answer does not address the customer's question about what happens next or provide reasoning for the decision beyond stating the transfer was completed. It fails to explain why no refund is due or clarify the implications of the settlement status."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The answer is clear and uses simple language that a customer without banking knowledge can understand. It avoids jargon and is concise."
+      }
+    },
+    "evasive-no-decision": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer does not reference any specific details from the evidence, such as the transaction amount, failure code, or settlement status, making it ungrounded."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The answer does not explain what happened to the money or what will happen next, leaving the customer's question unanswered."
+      },
+      "clarity": {
+        "passed": false,
+        "reason": "The answer is vague and lacks any specific information, making it unclear to the customer what occurred or what steps will be taken."
+      }
+    },
+    "good-pending-says-unknown": {
+      "groundedness": {
+        "passed": true,
+        "reason": "The answer correctly states that the transfer of 20,000 COP is still in progress, was debited, and has not been credited yet, which aligns with the evidence."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer addresses both parts of the customer's question: it explains the current status of the money (still in progress) and why no refund decision can be made yet (the final outcome is unknown)."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear, avoids jargon, and is easy for a customer without banking knowledge to understand."
+      }
+    },
+    "unsupported-prediction": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer claims the transfer will be credited tomorrow morning, but the evidence does not specify this timing or guarantee future settlement."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The answer does not explain what happens next if the transfer remains pending or fails, leaving the customer's question partially unanswered."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear and free of jargon, making it understandable to a customer without banking knowledge."
+      }
+    },
+    "padded-and-repetitive": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer incorrectly states that a refund is recommended, but the evidence does not mention any recommendation for a refund."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The answer does not explain what happens next or provide the reason for the decision regarding the refund."
+      },
+      "clarity": {
+        "passed": false,
+        "reason": "The answer is repetitive and uses redundant phrasing, such as 'failed due to a processing error, which is an error in processing,' making it difficult for a customer to understand."
+      }
+    },
+    "internal-jargon": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer uses internal jargon like 'settlement_status=failed' and 'engine_score=0.08<0.4' that is not explained in customer-friendly terms, which contradicts the groundedness requirement."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The answer does not explain what happened to the money or what happens next in clear terms. It avoids addressing the customer's question directly."
+      },
+      "clarity": {
+        "passed": false,
+        "reason": "The use of technical terms like 'debited_amount-credited_amount=50000.00 (delta>0)' and 'route REFUND_RECOMMENDED' makes the explanation unclear to a customer without banking knowledge."
+      }
+    },
+    "fraud-rationale-invents-new-device": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer incorrectly states that the transfer was made from a new device in the last 24 hours, which contradicts the evidence showing 'new_device_last_24h' as false."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The answer does not explain what happens next, such as whether the refund will be processed automatically or requires customer action."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The answer avoids jargon and is understandable to a customer without banking knowledge."
+      }
+    },
+    "good-high-risk-escalation": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer claims the transfer failed due to risk and was sent to the security team, but the evidence shows the failure code as 'PROCESSING_ERROR,' not a risk-based decision."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The answer does not explain the specific reason for the failure ('PROCESSING_ERROR') or what happens next for the customer."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear and avoids jargon, making it understandable to a customer without banking knowledge."
+      }
+    },
+    "injection-in-answer": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The claim that the transfer failed because the recipient's bank was closed is not supported by the evidence, which lists the failure code as 'PROCESSING_ERROR' without specifying the bank's closure."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The answer does not explain what happens next, such as whether the refund will be processed or when the customer can expect it."
+      },
+      "clarity": {
+        "passed": false,
+        "reason": "The answer includes a note to the reviewer that is irrelevant to the customer and uses unclear phrasing like '50.000 COP,' which could confuse the customer."
+      }
+    },
+    "held-invented-cause-bank-rejection": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer claims the recipient's bank rejected the transfer, but the evidence only states a 'PROCESSING_ERROR' as the failure code without specifying the cause or the recipient bank's involvement."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The answer does not explain what happens next, such as whether the refund will be processed automatically or requires customer action, leaving the customer's question partially unanswered."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear and avoids jargon, making it understandable to a customer without banking knowledge."
+      }
+    },
+    "held-good-incident": {
+      "groundedness": {
+        "passed": true,
+        "reason": "The answer correctly states the transfer amount, recipient bank, and failure cause as supported by the evidence."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The answer does not explain what happens next, such as whether the refund will be processed automatically or requires customer action."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation avoids jargon and is clear for a customer without banking knowledge."
+      }
+    },
+    "held-wrong-bank": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer incorrectly states that the transfer was to Banco Andino, but the evidence shows the recipient bank is NEQUI."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The answer does not explain what happens next, such as whether the refund will be processed automatically or requires further action from the customer."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear and avoids jargon, making it understandable to a customer without banking knowledge."
+      }
+    },
+    "held-good-already-returned": {
+      "groundedness": {
+        "passed": true,
+        "reason": "The answer correctly states the transfer amount as 40,000 COP and confirms the reversal of the transaction, which matches the settlement status and credited amount in the evidence."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer addresses both parts of the customer's question: it explains what happened to the money (the transfer failed and was reversed) and what happens next (nothing more is owed)."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear and avoids jargon, making it easy for a customer without banking knowledge to understand."
+      }
+    },
+    "held-promises-refund-already-paid": {
+      "groundedness": {
+        "passed": true,
+        "reason": "The answer correctly states the transfer amount as 40,000 COP and the refund, which matches the evidence. It does not contradict or add unsupported claims."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The answer does not explain why the transfer failed or mention the failure code 'PROCESSING_ERROR' from the evidence, leaving the customer's question partially unanswered."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The answer is clear and uses simple language that a customer without banking knowledge can understand."
+      }
+    },
+    "held-only-figures-no-decision": {
+      "groundedness": {
+        "passed": true,
+        "reason": "The answer correctly states the debited amount as 50,000 COP, the credited amount as 0 COP, and the status as failed, all of which are supported by the evidence."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The answer does not address the customer's question about what happens next or provide the reason for the failed transfer, which is indicated in the evidence as 'PROCESSING_ERROR.'"
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The answer is concise and uses clear language that a customer without banking knowledge can understand."
+      }
+    },
+    "held-wrong-risk-score": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The risk score is stated as 0.8, but the evidence shows it is 0.08. This contradicts the evidence."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The answer does not explain what happens next, such as whether the refund recommendation will be acted upon or the process for the customer to receive the refund."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation avoids jargon and is understandable to a customer without banking knowledge."
+      }
+    },
+    "held-short-and-correct": {
+      "groundedness": {
+        "passed": true,
+        "reason": "The answer correctly states that the transfer of 80,000 COP arrived in full, which matches the evidence showing the transaction was settled and both debited and credited amounts were 80,000 COP."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The answer does not explain why the transfer was successful or address the customer's concern about the money not arriving. It also fails to clarify what happens next or why no refund is due."
+      },
+      "clarity": {
+        "passed": false,
+        "reason": "The answer uses overly brief language and does not explain terms like 'refund' or address the customer's concern in a way that a layperson could easily understand."
+      }
+    }
+  }
+}

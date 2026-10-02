@@ -16,8 +16,8 @@ data:
   JWT_AUDIENCE: ${JWT_AUDIENCE}
   DEMO_IDP_PRIVATE_KEY_FILE: /mnt/secrets/demo-idp-private-key
   EVAL_RESULTS_DIR: /app/evals/results
+  JUDGE_RESULTS_DIR: /app/evals/judge/results
   # It reads each run's trace from Langfuse to draw it inside the page (ADR-0025)
   LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL}
   LANGFUSE_PUBLIC_KEY_FILE: /mnt/secrets/langfuse-public-key
   LANGFUSE_SECRET_KEY_FILE: /mnt/secrets/langfuse-secret-key
-  DEMO_SCRIPT_FILE: /app/docs/DEMO_SCRIPT.md

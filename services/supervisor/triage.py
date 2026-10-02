@@ -38,6 +38,7 @@ from langgraph.errors import GraphRecursionError
 from services.supervisor.clients import Specialists
 from services.supervisor.graph import RECURSION_LIMIT, TriageContext, TriageState
 from services.supervisor.incident_path import decide_known_incident, with_incident
+from services.supervisor.judge_jobs import JudgeJobs
 from services.supervisor.messages import INVESTIGATING, NEEDS_PERSON, customer_message
 from services.supervisor.queue import MAX_DELIVERIES, Delivery, DisputeQueue
 from services.supervisor.store import DisputeRecord, DisputeStore
@@ -112,6 +113,7 @@ class TriageRunner:
     recursion_limit: int = RECURSION_LIMIT
     retry_delay_seconds: float = RETRY_DELAY_SECONDS
     shutdown_grace_seconds: float = 30.0
+    judge_jobs: JudgeJobs | None = None  # LLM judge (ADR-0026); None = no judging
 
     async def run_graph(self, record: DisputeRecord) -> TriageResult:
         dispute = DisputeRequest.model_validate(record.request)
@@ -182,12 +184,23 @@ class TriageRunner:
                 return
             result = await self.run_graph(record)
             await self.store.finish(dispute_id, result)  # the decision is saved before any money moves
+            await self._ask_for_judgement(result)
             if result.status == DisputeStatus.REFUND_APPROVED:
                 await self.refunds.send(dispute_id)  # paid by the refund payer, at its own pace
             await self.queue.complete(delivery)
         except Exception:
             log.exception("delivery %d of dispute %s failed", delivery.delivery_count, dispute_id)
             await self._give_up_or_retry(delivery)
+
+    async def _ask_for_judgement(self, result: TriageResult) -> None:
+        """Queue the explanation for the LLM judge, if a model wrote one. Never affects the dispute:
+        a failure here is logged and the triage carries on."""
+        if self.judge_jobs is None or result.verdict is None or result.incident is not None:
+            return  # nothing a model wrote (no verdict, or decided by an incident with no model)
+        try:
+            await self.judge_jobs.enqueue(result.dispute_id)
+        except Exception:
+            log.warning("could not queue dispute %s for the judge", result.dispute_id, exc_info=True)
 
     async def _give_up_or_retry(self, delivery: Delivery) -> None:
         with suppress(Exception):  # if even this fails, the lock expires and the queue redelivers
