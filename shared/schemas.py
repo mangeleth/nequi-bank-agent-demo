@@ -181,6 +181,7 @@ class DisputeVerdict(Contract):
 class ApprovalRoute(StrEnum):
     AUTO_APPROVED = "auto_approved"  # every policy check passed: refund may execute
     HUMAN_REQUIRED = "human_required"  # at least one check failed: goes to the review queue
+    HUMAN_APPROVED = "human_approved"  # a reviewer approved it (ADR-0027): refund may execute
 
 
 class PolicyCheck(Contract):
@@ -197,7 +198,8 @@ class RefundApproval(Contract):
     dispute_id: UUID
     transaction_id: TransactionId
     route: ApprovalRoute
-    approved_amount: Money | None = None  # taken from the ledger, never from the LLM
+    approved_amount: Money | None = None  # taken from the ledger, never from the LLM or a person
+    approved_by: str | None = None  # the reviewer, for human_approved
     checks: list[PolicyCheck]
     policy_version: str
     evaluated_at: datetime
@@ -210,13 +212,16 @@ class RefundApproval(Contract):
                 raise ValueError(f"auto_approved requires every check to pass (failed: {failed})")
             if self.approved_amount is None:
                 raise ValueError("auto_approved requires approved_amount")
+        elif self.route == ApprovalRoute.HUMAN_APPROVED:
+            if self.approved_amount is None or not self.approved_by:
+                raise ValueError("human_approved requires approved_amount and approved_by")
         elif self.approved_amount is not None:
-            raise ValueError("approved_amount is only set when auto_approved; a human sets it otherwise")
+            raise ValueError("approved_amount is only set when a refund is approved")
         return self
 
     @property
     def status(self) -> DisputeStatus:
-        if self.route == ApprovalRoute.AUTO_APPROVED:
+        if self.route in (ApprovalRoute.AUTO_APPROVED, ApprovalRoute.HUMAN_APPROVED):
             return DisputeStatus.REFUND_APPROVED  # approved is not paid
         return DisputeStatus.PENDING_HUMAN_APPROVAL
 
@@ -228,6 +233,16 @@ class KnownIncident(Contract):
     incident_id: Annotated[str, Field(pattern=r"^INC-[0-9]{8}-[0-9]{2}$")]
     title: str = Field(min_length=1, max_length=200)
     confirmed_by: str = Field(min_length=1, max_length=100)
+
+
+class ReviewDecision(Contract):
+    """A person's decision on a dispute the system sent to them (ADR-0027)."""
+
+    decision: Literal["approve", "reject"]
+    reviewer_id: str
+    note: str = Field(min_length=5, max_length=500)  # why: required, for the audit trail
+    decided_at: datetime
+    amount: Money | None = None  # for approve: the ledger's figure
 
 
 class RefundPayment(Contract):
@@ -254,6 +269,7 @@ class TriageResult(Contract):
     approval: RefundApproval | None = None  # the deterministic policy decision, for refunds
     payment: RefundPayment | None = None  # set once the ledger confirms the refund was paid
     incident: KnownIncident | None = None  # set when a confirmed incident decided it, without a model
+    review: "ReviewDecision | None" = None  # set when a person decided it (ADR-0027)
     fraud: FraudAssessment | None = None
     ledger: LedgerReconciliation | None = None
     customer_message: str  # chosen by code from established facts; never model-written text
@@ -273,3 +289,6 @@ class DisputeView(Contract):
     result: TriageResult | None = None  # present once the run has finished
     created_at: datetime
     updated_at: datetime
+
+
+TriageResult.model_rebuild()  # resolve the forward reference to ReviewDecision

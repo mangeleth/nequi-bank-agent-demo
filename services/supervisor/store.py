@@ -88,6 +88,14 @@ class DisputeStore(Protocol):
 
     async def events(self, dispute_id: UUID) -> list[dict]: ...
 
+    async def review_queue(self, limit: int = 50) -> list[DisputeRecord]:
+        """Disputes waiting for a person (pending_human_approval), oldest first (ADR-0027)."""
+
+    async def decide(self, dispute_id: UUID, result: TriageResult, note: str) -> bool:
+        """A person's decision: pending_human_approval -> the result's status, whether the run
+        finished or failed. False if the dispute is no longer waiting for a person, so two
+        reviewers cannot both decide it."""
+
     async def save_judgement(self, dispute_id: UUID, result: dict, *, passed: bool | None,
                              prompt_version: str) -> None:
         """Store (or replace) the LLM judge's verdict on a dispute's explanation (ADR-0026).
@@ -194,6 +202,20 @@ class InMemoryDisputeStore:
 
     async def events(self, dispute_id):
         return list(self._events.get(dispute_id, []))
+
+    async def review_queue(self, limit=50):
+        waiting = [r for r in self._by_id.values() if r.business_status == DisputeStatus.PENDING_HUMAN_APPROVAL]
+        return sorted(waiting, key=lambda r: r.created_at)[:limit]
+
+    async def decide(self, dispute_id, result, note):
+        record = self._by_id.get(dispute_id)
+        if record is None or record.business_status != DisputeStatus.PENDING_HUMAN_APPROVAL:
+            return False
+        return self._change(
+            dispute_id, (ExecutionStatus.FINISHED.value, ExecutionStatus.FAILED.value), note,
+            execution_status=ExecutionStatus.FINISHED, business_status=result.status,
+            customer_message=result.customer_message, result=result.model_dump(mode="json"),
+        )
 
     async def save_judgement(self, dispute_id, result, *, passed, prompt_version):
         self._judgements[dispute_id] = {"dispute_id": dispute_id, "judged_at": datetime.now(UTC), "passed": passed,
@@ -368,6 +390,24 @@ class PostgresDisputeStore:
                 "SELECT at, execution_status, business_status, note FROM dispute_events "
                 "WHERE dispute_id = %s ORDER BY event_id", (dispute_id,))
             return await cursor.fetchall()
+
+    async def review_queue(self, limit=50):
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                f"SELECT {_COLUMNS} FROM disputes WHERE business_status = 'pending_human_approval' "
+                "ORDER BY created_at LIMIT %s", (limit,))
+            return [_record(row) for row in await cursor.fetchall()]
+
+    async def decide(self, dispute_id, result, note):
+        from psycopg.types.json import Jsonb
+
+        return await self._change(
+            dispute_id, (ExecutionStatus.FINISHED.value, ExecutionStatus.FAILED.value), note,
+            "execution_status = 'finished', business_status = %(business_status)s, "
+            "customer_message = %(customer_message)s, result = %(result)s",
+            also="AND business_status = 'pending_human_approval'",
+            business_status=result.status.value, customer_message=result.customer_message,
+            result=Jsonb(result.model_dump(mode="json")))
 
     async def save_judgement(self, dispute_id, result, *, passed, prompt_version):
         from psycopg.types.json import Jsonb

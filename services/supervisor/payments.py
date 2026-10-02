@@ -54,8 +54,9 @@ async def pay_approved(store: DisputeStore, specialists: Specialists, record: Di
     """
     result = TriageResult.model_validate(record.result)
     approval = result.approval
-    if approval is None or approval.route != ApprovalRoute.AUTO_APPROVED or approval.approved_amount is None:
-        raise RuntimeError(f"dispute {record.dispute_id} is refund_approved without an automatic approval")
+    approved_routes = (ApprovalRoute.AUTO_APPROVED, ApprovalRoute.HUMAN_APPROVED)  # the policy, or a person
+    if approval is None or approval.route not in approved_routes or approval.approved_amount is None:
+        raise RuntimeError(f"dispute {record.dispute_id} is refund_approved without an approval")
     key = f"dispute:{record.dispute_id}"
     try:
         payment = await specialists.pay_refund(record.user_id, record.transaction_id, approval.approved_amount, key)

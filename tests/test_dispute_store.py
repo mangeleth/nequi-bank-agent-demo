@@ -184,3 +184,27 @@ async def test_a_judgement_is_stored_replaced_and_listed_with_its_dispute(store)
     listed = await store.judgements()
     assert [(j["dispute_id"], j["transaction_id"], j["business_status"]) for j in listed] == [
         (record.dispute_id, REQUEST.transaction_id, "received")]
+
+
+async def test_the_review_queue_and_a_decision_that_only_one_reviewer_can_make(store):
+    waiting_finished, _ = await new_dispute(store)
+    await store.start(waiting_finished.dispute_id, "checking")
+    await store.finish(waiting_finished.dispute_id, result(waiting_finished.dispute_id, DisputeStatus.PENDING_HUMAN_APPROVAL))
+    waiting_failed, _ = await new_dispute(store)
+    await store.start(waiting_failed.dispute_id, "checking")
+    await store.fail(waiting_failed.dispute_id, "a person will look", "the run failed")  # also waits for a person
+    not_waiting, _ = await new_dispute(store)
+
+    queue = await store.review_queue()
+    assert [r.dispute_id for r in queue] == [waiting_finished.dispute_id, waiting_failed.dispute_id]  # oldest first
+
+    decided = result(waiting_failed.dispute_id, DisputeStatus.REJECTED).model_copy(
+        update={"customer_message": "A person reviewed your dispute."})
+    assert await store.decide(waiting_failed.dispute_id, decided, "reviewed by ops-ana: reject")
+    assert not await store.decide(waiting_failed.dispute_id, decided, "a second reviewer")  # already decided
+    assert not await store.decide(not_waiting.dispute_id, decided, "not waiting for a person")
+
+    stored = await store.load(waiting_failed.dispute_id)
+    assert (stored.execution_status, stored.business_status) == (ExecutionStatus.FINISHED, DisputeStatus.REJECTED)
+    assert [e["note"] for e in await store.events(waiting_failed.dispute_id)][-1] == "reviewed by ops-ana: reject"
+    assert [r.dispute_id for r in await store.review_queue()] == [waiting_finished.dispute_id]

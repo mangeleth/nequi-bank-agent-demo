@@ -121,3 +121,35 @@ def test_missing_settings_fail_fast(monkeypatch):
         monkeypatch.delenv(name, raising=False)
     with pytest.raises(ValueError, match="JWT_ISSUER, JWT_AUDIENCE, JWT_PUBLIC_KEY_FILE"):
         AuthSettings.from_env()
+
+
+# --- Reviewer tokens (ADR-0027) ------------------------------------------------------------------
+
+
+def test_a_reviewer_token_carries_the_role_and_an_ops_identity():
+    from shared.auth import verify_reviewer_token
+    from tests.jwt_helpers import SETTINGS as S, claims as c, sign as s
+
+    who = verify_reviewer_token(s(c(sub="ops-ana", roles=["dispute-reviewer"])), S)
+    assert who.reviewer_id == "ops-ana"
+
+
+@pytest.mark.parametrize("overrides", [
+    {"sub": "user-1001", "roles": ["dispute-reviewer"]},  # a customer id cannot be a reviewer
+    {"sub": "ops-ana"},  # no role
+    {"sub": "ops-ana", "roles": "dispute-reviewer"},  # the role must be in a list
+    {"sub": "ops-ana", "roles": ["dispute-reviewer"], "aud": "another-app"},
+])
+def test_reviewer_tokens_are_refused_without_every_check(overrides):
+    from shared.auth import AuthError, verify_reviewer_token
+    from tests.jwt_helpers import SETTINGS as S, claims as c, sign as s
+
+    with pytest.raises(AuthError):
+        verify_reviewer_token(s(c(**overrides)), S)
+
+
+def test_a_customer_token_with_a_smuggled_role_is_still_only_a_customer():
+    from tests.jwt_helpers import SETTINGS as S, claims as c, sign as s
+
+    identity = verify_token(s(c(sub="user-1001", roles=["dispute-reviewer"])), S)
+    assert identity.user_id == "user-1001" and not hasattr(identity, "reviewer_id")
