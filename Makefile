@@ -472,8 +472,11 @@ deploy:
 
 ## Call the service from inside the cluster via its ClusterIP DNS name
 SMOKE_PATH = $(if $(filter demo-ui,$(SERVICE)),/_stcore/health,/healthz)
+## A service without a Service (a worker: no one can call it) is checked from inside its own pod
 smoke:
-	scripts/smoke.sh $(K8S_NAMESPACE) http://$(SERVICE)$(SMOKE_PATH)
+	@if [ -f k8s/$(SERVICE)/service.yaml ]; then scripts/smoke.sh $(K8S_NAMESPACE) http://$(SERVICE)$(SMOKE_PATH); \
+	else kubectl exec -n $(K8S_NAMESPACE) deploy/$(SERVICE) -- python -c \
+		"import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/healthz').read().decode())"; fi
 
 ## End-to-end check of the deployed Fraud Agent: log in as a synthetic customer and dispute
 ## their failed transfer, from inside the cluster
