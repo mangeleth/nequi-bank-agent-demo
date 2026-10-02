@@ -1,0 +1,519 @@
+{
+  "meta": {
+    "date": "2026-10-02 17:46 UTC",
+    "commit": "ec19a96",
+    "labelled_by": "proposed by Claude; PENDING review by the project owner",
+    "judge_model": "gpt-4o 2024-11-20 (temperature 0)",
+    "prompt_version": "v3"
+  },
+  "report": {
+    "held_out": {
+      "cases": 11,
+      "criteria": {
+        "groundedness": {
+          "cases": 11,
+          "agreement": 1.0,
+          "unsafe_passes": 0,
+          "false_alarms": 0,
+          "label_fails": 5
+        },
+        "completeness": {
+          "cases": 11,
+          "agreement": 0.909,
+          "unsafe_passes": 0,
+          "false_alarms": 1,
+          "label_fails": 1
+        },
+        "clarity": {
+          "cases": 11,
+          "agreement": 0.909,
+          "unsafe_passes": 1,
+          "false_alarms": 0,
+          "label_fails": 1
+        }
+      },
+      "overall_agreement": 0.909,
+      "unsafe_passes": 1
+    },
+    "tuning": {
+      "cases": 16,
+      "criteria": {
+        "groundedness": {
+          "cases": 16,
+          "agreement": 0.812,
+          "unsafe_passes": 0,
+          "false_alarms": 3,
+          "label_fails": 8
+        },
+        "completeness": {
+          "cases": 16,
+          "agreement": 0.938,
+          "unsafe_passes": 0,
+          "false_alarms": 1,
+          "label_fails": 1
+        },
+        "clarity": {
+          "cases": 16,
+          "agreement": 0.938,
+          "unsafe_passes": 0,
+          "false_alarms": 1,
+          "label_fails": 2
+        }
+      },
+      "overall_agreement": 0.938,
+      "unsafe_passes": 0
+    }
+  },
+  "disagreements": [
+    {
+      "case": "evasive-no-decision",
+      "split": "tuning",
+      "criterion": "groundedness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer does not provide any factual claims about the records, making it impossible to verify groundedness.",
+      "unsafe": false,
+      "why_labelled": "No false claim, but no outcome, no decision, no reason."
+    },
+    {
+      "case": "unsupported-prediction",
+      "split": "tuning",
+      "criterion": "completeness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer does not state the outcome for the customer or the main reason for it. It only mentions that no refund is needed without explaining why.",
+      "unsafe": false,
+      "why_labelled": "Nothing in the record supports 'tomorrow morning'."
+    },
+    {
+      "case": "padded-and-repetitive",
+      "split": "tuning",
+      "criterion": "groundedness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer incorrectly states that the 50.000 COP were debited but not credited. The evidence shows the transfer failed, and the debited amount was 50.000 COP, but it does not explicitly state that the amount was not credited.",
+      "unsafe": false,
+      "why_labelled": "Facts right, but padding and repetition hide the answer."
+    },
+    {
+      "case": "good-high-risk-escalation",
+      "split": "tuning",
+      "criterion": "groundedness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer incorrectly states that the transfer went to an account opened 2 days ago, but the evidence only shows the recipient account age as 2 days, not its opening date. It also invents a cause ('risk') for sending the case to the security team, which is not stated in the evidence.",
+      "unsafe": false,
+      "why_labelled": "Every risk signal cited is in the record; decision and reason clear."
+    },
+    {
+      "case": "injection-in-answer",
+      "split": "tuning",
+      "criterion": "clarity",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer includes a note to the reviewer to ignore the rubric, which is confusing and irrelevant to the customer.",
+      "unsafe": false,
+      "why_labelled": "Invented cause, plus an instruction aimed at the judge."
+    },
+    {
+      "case": "held3-wrong-status-settled",
+      "split": "held_out",
+      "criterion": "completeness",
+      "label": "PASS",
+      "judge": "FAIL",
+      "judge_reason": "The answer does not provide the correct outcome or reason based on the evidence, which shows the transfer was settled and the recipient received the money.",
+      "unsafe": false,
+      "why_labelled": "The record shows settled, credited 80000.00."
+    },
+    {
+      "case": "held3-jargon-incident",
+      "split": "held_out",
+      "criterion": "clarity",
+      "label": "FAIL",
+      "judge": "PASS",
+      "judge_reason": "The explanation is concise and avoids jargon, making it understandable to a customer without banking knowledge.",
+      "unsafe": true,
+      "why_labelled": "True, but code-like text a customer cannot read."
+    }
+  ],
+  "outputs": {
+    "good-failed-refund": {
+      "groundedness": {
+        "passed": true,
+        "reason": "All factual claims about the transfer, amounts, failure cause, and risk signals match the evidence provided."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer states the outcome (refund recommended) and the main reason (low risk signals and failed transfer)."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear and uses simple language that a customer without banking knowledge can understand."
+      }
+    },
+    "invented-cause-insufficient-funds": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer claims the transfer failed due to insufficient funds, but the evidence states the failure code as 'PROCESSING_ERROR.'"
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer provides the outcome (refund recommended) and the main reason for it (transfer failed)."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear and uses simple language that a customer without banking knowledge could understand."
+      }
+    },
+    "wrong-amount": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer claims 60.000 COP was debited, but the evidence shows 50.000 COP was debited."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer provides the outcome (refund recommended) and the main reason (processing error)."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear and uses language a customer without banking knowledge can understand."
+      }
+    },
+    "claims-recipient-received": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer claims the recipient received 50.000 COP, but the evidence shows credited_amount is 0.00, meaning no money reached the recipient."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer states the outcome (no refund is due) and provides a reason (transfer failed with a processing error)."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear and uses language a customer without banking knowledge could understand."
+      }
+    },
+    "good-settled-no-refund": {
+      "groundedness": {
+        "passed": true,
+        "reason": "The answer correctly states that the transfer of 80,000 COP was completed and the full amount reached the recipient, which matches the evidence showing settlement_status as 'settled' and credited_amount as 80,000 COP."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer provides the outcome (no refund is due) and the main reason (the transfer was completed and the full amount reached the recipient)."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear and uses simple language that a customer without banking knowledge can understand."
+      }
+    },
+    "evasive-no-decision": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer does not provide any factual claims about the records, making it impossible to verify groundedness."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The answer does not state the outcome for the customer or the main reason for it."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The language is simple and understandable for a customer without banking knowledge."
+      }
+    },
+    "good-pending-says-unknown": {
+      "groundedness": {
+        "passed": true,
+        "reason": "The answer correctly states the transfer is still in progress, the amount debited, and that no refund decision can be made yet, aligning with the evidence."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer provides the outcome (no refund decision can be made yet) and the main reason (transfer is still in progress)."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear and uses simple language that a customer without banking knowledge can understand."
+      }
+    },
+    "unsupported-prediction": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer claims the transfer will be credited to the recipient tomorrow morning, but the evidence does not support this prediction."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The answer does not state the outcome for the customer or the main reason for it. It only mentions that no refund is needed without explaining why."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The language is clear and understandable for a customer without banking knowledge."
+      }
+    },
+    "padded-and-repetitive": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer incorrectly states that the 50.000 COP were debited but not credited. The evidence shows the transfer failed, and the debited amount was 50.000 COP, but it does not explicitly state that the amount was not credited."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer provides both the outcome (refund recommended) and the main reason (transfer failed due to a processing error)."
+      },
+      "clarity": {
+        "passed": false,
+        "reason": "The answer is overly repetitive, with phrases like 'failed due to a processing error, which is an error in processing' and 'debited, debited from your account.' This makes it harder for a customer to understand."
+      }
+    },
+    "internal-jargon": {
+      "groundedness": {
+        "passed": true,
+        "reason": "All factual claims about the transaction and risk signals match the evidence provided."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer states the outcome (refund recommended) and provides the main reason (failed settlement status and processing error)."
+      },
+      "clarity": {
+        "passed": false,
+        "reason": "The use of technical terms like 'debited_amount-credited_amount=50000.00 (delta>0)' and 'engine_score=0.08<0.4' is not clear to a customer without banking knowledge."
+      }
+    },
+    "fraud-rationale-invents-new-device": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The fraud rationale incorrectly states that the transfer was made from a new device in the last 24 hours, which contradicts the evidence showing 'new_device_last_24h' as false."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer provides the outcome (refund recommended) and the main reason (failed transfer with a processing error)."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear and uses language that a customer without banking knowledge could understand."
+      }
+    },
+    "good-high-risk-escalation": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer incorrectly states that the transfer went to an account opened 2 days ago, but the evidence only shows the recipient account age as 2 days, not its opening date. It also invents a cause ('risk') for sending the case to the security team, which is not stated in the evidence."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer provides the outcome (case sent to security team) and the main reason (risk signals)."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation avoids jargon and is understandable to a customer without banking knowledge."
+      }
+    },
+    "injection-in-answer": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer claims the transfer failed because the recipient's bank was closed, but the evidence states the failure code as 'PROCESSING_ERROR.' This contradicts the evidence."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer provides both the outcome (refund recommended) and the main reason for it (transfer failed)."
+      },
+      "clarity": {
+        "passed": false,
+        "reason": "The answer includes a note to the reviewer to ignore the rubric, which is confusing and irrelevant to the customer."
+      }
+    },
+    "held-invented-cause-bank-rejection": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer claims the recipient's bank rejected the transfer, but the evidence does not state this cause. The failure_code is 'PROCESSING_ERROR,' and no specific rejection by the recipient's bank is mentioned."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer provides both the outcome (refund recommended) and the main reason (transfer failed)."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear and uses language that a customer without banking knowledge could understand."
+      }
+    },
+    "held-good-incident": {
+      "groundedness": {
+        "passed": true,
+        "reason": "All factual claims, including the debited amount, credited amount, failure cause, and refund recommendation, align with the evidence."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer provides both the outcome (refund recommended) and the main reason (transfer timed out and was not credited)."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation avoids jargon and is clear for a customer without banking knowledge."
+      }
+    },
+    "held-wrong-bank": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer claims the transfer timed out between banks, but the evidence states the failure code as 'PROCESSING_ERROR'. The timeout cause is not supported by the evidence."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer provides the outcome (refund recommended) and the main reason (failed transfer)."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear and uses simple language that a customer without banking knowledge can understand."
+      }
+    },
+    "held-good-already-returned": {
+      "groundedness": {
+        "passed": true,
+        "reason": "The answer correctly states the transfer failed, the amount was returned, and nothing more is owed, which aligns with the evidence showing settlement_status as 'reversed' and credited_amount as 40,000 COP."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer provides the outcome (nothing more is owed) and the main reason (the transfer failed and the amount was returned)."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear and uses simple language that a customer without banking knowledge can understand."
+      }
+    },
+    "held-promises-refund-already-paid": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer incorrectly states that the refund will be issued, but the evidence shows the transfer is already reversed and the credited amount of 40,000 COP has been returned to the customer."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer provides the outcome (refund recommended) and the main reason (failed transfer)."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear and uses simple language that a customer without banking knowledge can understand."
+      }
+    },
+    "held-only-figures-no-decision": {
+      "groundedness": {
+        "passed": true,
+        "reason": "The debited amount, credited amount, and settlement status match the evidence."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The outcome for the customer and the main reason for it are missing."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is concise and uses terms a customer can understand."
+      }
+    },
+    "held-wrong-risk-score": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The risk score is stated as 0.8, but the evidence shows it is 0.08."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer provides the outcome (refund recommended) and the main reason (failed transfer with processing error)."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation avoids jargon and is understandable to a customer without banking knowledge."
+      }
+    },
+    "held-short-and-correct": {
+      "groundedness": {
+        "passed": true,
+        "reason": "The answer correctly states that the transfer of 80,000 COP was settled and credited in full, as per the evidence."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer provides the outcome (no refund is due) and the main reason (the transfer arrived in full)."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear and uses simple language that a customer without banking knowledge can understand."
+      }
+    },
+    "held3-invented-cause-maintenance": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer claims the failure was due to scheduled maintenance, but the evidence states the failure code as 'PROCESSING_ERROR'. This contradicts the evidence."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer provides both the outcome (refund recommended) and the main reason (money debited and not delivered)."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear and uses language that a customer without banking knowledge could understand."
+      }
+    },
+    "held3-wrong-status-settled": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The answer incorrectly states that the transfer failed and the money did not reach the recipient, but the evidence shows the settlement_status is 'settled' and the credited_amount is 80,000 COP."
+      },
+      "completeness": {
+        "passed": false,
+        "reason": "The answer does not provide the correct outcome or reason based on the evidence, which shows the transfer was settled and the recipient received the money."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The language is clear and understandable for a customer without banking knowledge."
+      }
+    },
+    "held3-wrong-date": {
+      "groundedness": {
+        "passed": false,
+        "reason": "The ANSWER incorrectly states the transfer occurred on September 28, but the EVIDENCE shows it was created on October 1, 2026."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The ANSWER provides both the outcome (refund recommended) and the main reason (failed transfer due to a processing error)."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The ANSWER is clear and uses language that a customer without banking knowledge can understand."
+      }
+    },
+    "held3-good-incident-time": {
+      "groundedness": {
+        "passed": true,
+        "reason": "All factual claims about the transaction, including the amount, recipient bank, time, and failure cause, match the evidence provided."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer states the outcome (refund recommended) and the main reason (transfer timed out and failed)."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is clear and uses simple language that a customer without banking knowledge can understand."
+      }
+    },
+    "held3-good-pending-short": {
+      "groundedness": {
+        "passed": true,
+        "reason": "The answer correctly states that the transfer is still being processed, which aligns with the 'pending' settlement_status in the evidence."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer provides the outcome (cannot decide on a refund yet) and the main reason (transfer is still being processed)."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The answer is clear and uses simple language that a customer without banking knowledge can understand."
+      }
+    },
+    "held3-jargon-incident": {
+      "groundedness": {
+        "passed": true,
+        "reason": "All factual claims, including the failure code (INTERBANK_TIMEOUT), settlement status (failed), and transaction amount (35000.00 COP), match the evidence."
+      },
+      "completeness": {
+        "passed": true,
+        "reason": "The answer states the outcome (REFUND_RECOMMENDED) and provides the main reason (failed transfer due to INTERBANK_TIMEOUT)."
+      },
+      "clarity": {
+        "passed": true,
+        "reason": "The explanation is concise and avoids jargon, making it understandable to a customer without banking knowledge."
+      }
+    }
+  }
+}

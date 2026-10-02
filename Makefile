@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: test-db test-servicebus venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster failure-tests failure-test-kill redis-image postgres-image postgres-password ledger-password ledger-db incident-refunds demo-idp-publish ui ui-publish ui-unpublish run-ui signing-key signing-grant signing-key-publish servicebus-create sb-grant demo-reset test guard-clean validate build push deploy smoke release
+.PHONY: test-db test-servicebus venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster judge-calibrate failure-tests failure-test-kill redis-image postgres-image postgres-password ledger-password ledger-db incident-refunds demo-idp-publish ui ui-publish ui-unpublish run-ui signing-key signing-grant signing-key-publish servicebus-create sb-grant demo-reset test guard-clean validate build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -395,6 +395,10 @@ EVAL_LABEL ?= local
 ## Run evals/scenarios.json against a running supervisor; fails if any scenario fails
 eval:
 	$(LANGFUSE_KEYS) .venv/bin/python -m evals.run --url $(SUPERVISOR_URL) --label $(EVAL_LABEL)
+
+## Calibrate the LLM judge against the labelled cases (ADR-0026). Calls the real model (~$0.05).
+judge-calibrate:
+	.venv/bin/python -m evals.judge_calibrate
 
 ## Evaluate the system deployed on AKS, through a temporary port-forward to the supervisor
 eval-cluster:
