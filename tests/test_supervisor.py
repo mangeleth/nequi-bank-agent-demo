@@ -5,6 +5,7 @@ graph's deterministic controls decide the outcome.
 
 import json
 import time
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -15,12 +16,13 @@ from services.supervisor.dedup import InMemoryGate
 from services.supervisor.graph import MAX_CALLS_PER_AGENT, MAX_SUPERVISOR_TURNS, breaker
 from services.supervisor.main import create_app
 from services.supervisor.store import InMemoryDisputeStore
+from shared.auth import verify_token
 from shared.refund_policy import CustomerRefundHistory, RefundPolicyConfig
 from shared.schemas import FraudAssessment, LedgerReconciliation
 from shared.tracing import Tracing
 from tests.fakes import ScriptedChatModel, ai
 from tests.fakes import tool_call as call
-from tests.jwt_helpers import SETTINGS, bearer
+from tests.jwt_helpers import DELEGATION, INTERNAL_SETTINGS, SETTINGS, SIGNER, bearer
 
 TX = "TX-20261001000001"
 URL = "/v1/disputes"
@@ -110,7 +112,8 @@ def triage(script, specialists=None, headers=None, **app_options):
     model = ScriptedChatModel(script=script)
     specialists = specialists or FakeSpecialists()
     app = create_app(auth=SETTINGS, model=model, specialists=specialists, tracing=Tracing(),
-                     policy=RefundPolicyConfig(), gate=InMemoryGate(), store=InMemoryDisputeStore(), **app_options)
+                     policy=RefundPolicyConfig(), gate=InMemoryGate(), store=InMemoryDisputeStore(),
+                     signer=SIGNER, delegation=DELEGATION, **app_options)
     auth_headers = bearer("user-1001") if headers is None else headers
     with TestClient(app) as client:
         submitted = client.post(URL, json=DISPUTE, headers=auth_headers)
@@ -284,15 +287,22 @@ def test_unexpected_error_ends_in_human_review_not_a_crash():
 # --- Identity ---------------------------------------------------------------------------------------
 
 
-def test_token_is_forwarded_to_agents_but_never_shown_to_the_model():
+def test_agents_get_a_token_issued_by_the_supervisor_not_the_customers():
     headers = bearer("user-1001")
-    token = headers["Authorization"].removeprefix("Bearer ")
+    customer_token = headers["Authorization"].removeprefix("Bearer ")
     response, model, specialists = triage(HAPPY, headers=headers)
 
-    assert set(specialists.tokens_received) == {token}
+    assert len(set(specialists.tokens_received)) == 1  # one token per run, used for both agents
+    issued = specialists.tokens_received[0]
+    assert issued != customer_token  # the customer's login token is never forwarded
+
+    identity = verify_token(issued, INTERNAL_SETTINGS)
+    assert (identity.user_id, identity.delegated_by, identity.transaction_id) == ("user-1001", "supervisor", TX)
+    assert (identity.expires_at - datetime.now(UTC)).total_seconds() <= DELEGATION.lifetime_seconds
+
     shown = model.everything_shown_to_model()
-    assert token not in shown and "user-1001" not in shown
-    assert token not in response.text
+    for secret in (customer_token, issued, "user-1001"):
+        assert secret not in shown and secret not in response.text
 
 
 @pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer not.a.token"}])

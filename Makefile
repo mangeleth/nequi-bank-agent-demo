@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: test-db venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster redis-image postgres-image postgres-password demo-reset test guard-clean build push deploy smoke release
+.PHONY: test-db venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster redis-image postgres-image postgres-password demo-reset test guard-clean build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -225,6 +225,15 @@ TX ?= TX-20261001000001
 ## Print a 15-minute login token for a synthetic customer (creates .local/ keys on first use)
 demo-token:
 	@.venv/bin/python scripts/demo_token.py $(USER_ID)
+
+## Key pair for the supervisor's own tokens, for LOCAL runs only (the cluster's key lives in Key Vault)
+internal-key-local:
+	@mkdir -p .local
+	@test -f .local/internal-jwt-private.pem || ( \
+		openssl genpkey -quiet -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out .local/internal-jwt-private.pem && \
+		chmod 600 .local/internal-jwt-private.pem && \
+		openssl pkey -in .local/internal-jwt-private.pem -pubout -out .local/internal-jwt-public.pem && \
+		echo "created .local/internal-jwt-*.pem" )
 
 run-core:
 	.venv/bin/uvicorn services.core_systems.app:app --port 8001

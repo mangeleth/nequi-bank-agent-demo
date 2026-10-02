@@ -11,6 +11,9 @@ Order of work for POST (ADR-0013, ADR-0015, ADR-0016):
   4. Store the dispute in PostgreSQL (the unique key there is the guarantee).
   5. Start the triage in the background and answer 202.
 
+The supervisor trusts only the customer identity provider. When a run starts it issues its own
+short-lived token for the agents, valid for that customer and that transaction (ADR-0017).
+
 The triage itself is three conditional status changes around the graph:
     queued -> running        (store.start)
     ...the supervisor graph, with a hard recursion limit, traced to Langfuse...
@@ -39,6 +42,7 @@ from services.supervisor.graph import RECURSION_LIMIT, TriageContext, TriageStat
 from services.supervisor.messages import INVESTIGATING, NEEDS_PERSON, RECEIVED, customer_message
 from services.supervisor.store import DisputeRecord, DisputeStore, open_store
 from shared.auth import AuthError, AuthSettings, CallerIdentity, bearer_token, verify_token
+from shared.delegation import DelegationSettings, TokenSigner, build_signer, issue_delegated_token
 from shared.refund_policy import RefundPolicyConfig
 from shared.schemas import Decision, DisputeRequest, DisputeStatus, DisputeView, TriageResult
 from shared.tracing import Tracing, build_tracing
@@ -105,6 +109,8 @@ def create_app(
     policy: RefundPolicyConfig | None = None,
     gate: DisputeGate | None = None,
     store: DisputeStore | None = None,
+    signer: TokenSigner | None = None,
+    delegation: DelegationSettings | None = None,
     recursion_limit: int = RECURSION_LIMIT,
 ) -> FastAPI:
     """Build the app. Arguments default to real, env-configured dependencies; tests pass fakes."""
@@ -128,6 +134,7 @@ def create_app(
         app.state.tracing = tracing or build_tracing()
         app.state.gate = gate or build_gate()
         app.state.store, pool = (store, None) if store is not None else await open_store()
+        app.state.signer, app.state.delegation = (signer, delegation) if signer is not None else build_signer()
         app.state.graph = build_graph(model or build_chat_model())
         app.state.slots = asyncio.Semaphore(MAX_CONCURRENT_TRIAGES)
         app.state.runs = set()  # background triages, kept so they are not garbage-collected
@@ -197,12 +204,18 @@ def create_app(
             final = {"escalation_reason": reason, "steps": [f"escalate: {reason}"]}
         return _result(dispute_id, dispute, final, state.tracing.url(trace_id))
 
-    async def _triage(dispute_id: UUID, dispute: DisputeRequest, identity: CallerIdentity, token: str, state) -> None:
+    async def _triage(dispute_id: UUID, dispute: DisputeRequest, identity: CallerIdentity, state) -> None:
         """One background run: queued -> running -> finished, or failed."""
         async with state.slots:
             try:
                 if not await state.store.start(dispute_id, INVESTIGATING):
                     return  # no longer queued: another worker took it, or the sweeper failed it
+                # The agents get a fresh token issued by us for this customer and this transaction
+                # only. The customer's own login token is never forwarded or stored.
+                token = await issue_delegated_token(
+                    state.signer, state.delegation, user_id=identity.user_id,
+                    transaction_id=dispute.transaction_id, dispute_id=str(dispute_id),
+                )
                 result = await _run_graph(dispute_id, dispute, identity, token, state)
                 await state.store.finish(dispute_id, result)
             except Exception:
@@ -212,7 +225,7 @@ def create_app(
 
     @app.post("/v1/disputes", status_code=202, response_model=DisputeView)
     async def submit_dispute(dispute: DisputeRequest, request: Request, response: Response, auth_: Caller):
-        identity, token = auth_
+        identity, _ = auth_
         state = request.app.state
 
         # The gate: one dispute per customer and transaction. If its store is down we fail closed.
@@ -256,7 +269,7 @@ def create_app(
         if not created:
             return _replay(record)  # Redis had forgotten this key; the database had not
 
-        run = asyncio.create_task(_triage(record.dispute_id, dispute, identity, token, state))
+        run = asyncio.create_task(_triage(record.dispute_id, dispute, identity, state))
         state.runs.add(run)
         run.add_done_callback(state.runs.discard)
         response.headers["Location"] = f"/v1/disputes/{record.dispute_id}"

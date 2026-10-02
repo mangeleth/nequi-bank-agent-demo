@@ -104,7 +104,7 @@ class TriageContext:
 
     dispute_id: UUID  # the stored dispute this run belongs to
     caller: CallerIdentity
-    token: str  # the customer's JWT, forwarded to the agents
+    token: str  # issued by the supervisor for this customer and transaction; sent to the agents
     specialists: Specialists
     policy: RefundPolicyConfig
     trace_id: str | None = None  # passed to the agents so their steps join this run's trace

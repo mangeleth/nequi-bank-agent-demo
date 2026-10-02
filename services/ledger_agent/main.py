@@ -23,7 +23,14 @@ from langchain_core.language_models import BaseChatModel
 
 from services.ledger_agent.agent import ReconciliationFailed, reconcile, verify_against_ledger
 from services.ledger_agent.mcp_client import McpToolRejected, open_core_banking
-from shared.auth import AuthError, AuthSettings, CallerIdentity, bearer_token, verify_token
+from shared.auth import (
+    AuthError,
+    AuthSettings,
+    CallerIdentity,
+    bearer_token,
+    trusted_issuers_from_env,
+    verify_token,
+)
 from shared.schemas import DisputeRequest, LedgerReconciliation
 from shared.tracing import Tracing, build_tracing
 
@@ -32,7 +39,7 @@ log = logging.getLogger("ledger_agent")
 
 def create_app(
     *,
-    auth: AuthSettings | None = None,
+    auth: AuthSettings | list[AuthSettings] | None = None,
     model: BaseChatModel | None = None,
     core_url: str | None = None,
     http_factory: Callable[..., httpx2.AsyncClient] = httpx2.AsyncClient,
@@ -45,7 +52,7 @@ def create_app(
         if model is None:
             from shared.llm import build_chat_model  # imported here so tests need no Azure setup
 
-        app.state.auth = auth or AuthSettings.from_env()
+        app.state.auth = auth or trusted_issuers_from_env()  # customers, and the supervisor acting for them
         app.state.model = model or build_chat_model()
         app.state.core_url = (core_url or os.environ["CORE_SYSTEMS_URL"]).rstrip("/")
         app.state.tracing = tracing or build_tracing()
@@ -68,6 +75,9 @@ def create_app(
         identity: Annotated[CallerIdentity, Depends(caller)],
         traceparent: Annotated[str | None, Header()] = None,
     ) -> LedgerReconciliation:
+        # A token the supervisor issued is valid for one transaction and no other.
+        if identity.transaction_id is not None and identity.transaction_id != dispute.transaction_id:
+            raise HTTPException(403, "this token is not valid for this transaction")
         state = request.app.state
         reconciliation, failure = None, None
         # Called by the supervisor, the `traceparent` header makes this run part of its trace.

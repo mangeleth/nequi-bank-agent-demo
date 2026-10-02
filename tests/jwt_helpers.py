@@ -41,3 +41,17 @@ def sign(payload: dict, key: str = PRIVATE_KEY, algorithm: str = "RS256") -> str
 
 def bearer(user_id: str = "user-1001") -> dict:
     return {"Authorization": f"Bearer {sign(claims(sub=user_id))}"}
+
+
+# --- The supervisor's own issuer (tokens it issues to act for a customer) ---------------------
+
+from shared.delegation import DelegationSettings, LocalKeySigner  # noqa: E402
+
+INTERNAL_ISSUER = "https://supervisor.disputes.internal"
+INTERNAL_AUDIENCE = "dispute-agents"
+INTERNAL_PRIVATE_KEY, INTERNAL_PUBLIC_KEY = keypair()
+INTERNAL_SETTINGS = AuthSettings(issuer=INTERNAL_ISSUER, audience=INTERNAL_AUDIENCE,
+                                 public_key=INTERNAL_PUBLIC_KEY, delegation=True)
+TRUSTED_BY_AGENTS = [SETTINGS, INTERNAL_SETTINGS]  # customers, and the supervisor acting for them
+DELEGATION = DelegationSettings(issuer=INTERNAL_ISSUER, audience=INTERNAL_AUDIENCE)
+SIGNER = LocalKeySigner(INTERNAL_PRIVATE_KEY)

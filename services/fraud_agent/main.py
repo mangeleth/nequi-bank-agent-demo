@@ -22,7 +22,14 @@ from langchain_core.language_models import BaseChatModel
 
 from services.fraud_agent.agent import AssessmentFailed, assess, build_fraud_agent
 from services.fraud_agent.tools import AgentContext, core_get
-from shared.auth import AuthError, AuthSettings, CallerIdentity, bearer_token, verify_token
+from shared.auth import (
+    AuthError,
+    AuthSettings,
+    CallerIdentity,
+    bearer_token,
+    trusted_issuers_from_env,
+    verify_token,
+)
 from shared.schemas import DisputeRequest, FraudAssessment
 from shared.tracing import Tracing, build_tracing
 
@@ -31,7 +38,7 @@ log = logging.getLogger("fraud_agent")
 
 def create_app(
     *,
-    auth: AuthSettings | None = None,
+    auth: AuthSettings | list[AuthSettings] | None = None,
     core: httpx.AsyncClient | None = None,
     model: BaseChatModel | None = None,
     tracing: Tracing | None = None,
@@ -43,7 +50,7 @@ def create_app(
         if model is None:
             from shared.llm import build_chat_model  # imported here so tests need no Azure setup
 
-        app.state.auth = auth or AuthSettings.from_env()
+        app.state.auth = auth or trusted_issuers_from_env()  # customers, and the supervisor acting for them
         app.state.core = core or httpx.AsyncClient(base_url=os.environ["CORE_SYSTEMS_URL"], timeout=10)
         app.state.agent = build_fraud_agent(model or build_chat_model())
         app.state.tracing = tracing or build_tracing()
@@ -68,6 +75,9 @@ def create_app(
         identity: Annotated[CallerIdentity, Depends(caller)],
         traceparent: Annotated[str | None, Header()] = None,
     ) -> FraudAssessment:
+        # A token the supervisor issued is valid for one transaction and no other.
+        if identity.transaction_id is not None and identity.transaction_id != dispute.transaction_id:
+            raise HTTPException(403, "this token is not valid for this transaction")
         context = AgentContext(caller=identity, core=request.app.state.core)
 
         # Authorization in code, before any model call.

@@ -10,6 +10,7 @@ services hold only the public key, so a compromised service can verify tokens bu
 
 import os
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,6 +34,9 @@ class CallerIdentity(BaseModel):
     user_id: str = Field(pattern=r"^user-[0-9]{4,12}$")
     token_id: str  # jti: lets audit logs tie every action to one login
     expires_at: datetime
+    # Set only on tokens our own supervisor issued on the customer's behalf (ADR-0017):
+    delegated_by: str | None = None  # who is acting for the customer, e.g. "supervisor"
+    transaction_id: str | None = None  # the one transaction such a token may be used for
 
 
 @dataclass(frozen=True)
@@ -42,6 +46,9 @@ class AuthSettings:
     public_key: str  # PEM. Not a secret: it can only verify, not sign
     algorithm: str = "RS256"
     leeway_seconds: int = 30  # tolerated clock drift between services
+    # True for our internal issuer: its tokens must name who is acting and for which transaction.
+    # False for the customer identity provider: such claims in a customer token are ignored.
+    delegation: bool = False
 
     @classmethod
     def from_env(cls) -> "AuthSettings":
@@ -65,25 +72,62 @@ def bearer_token(authorization_header: str | None) -> str:
     return match.group(1)
 
 
-def verify_token(token: str, settings: AuthSettings) -> CallerIdentity:
-    """Fully verify a JWT and return the caller's identity. Raises AuthError on any failure."""
+def _named_issuer(token: str) -> str | None:
+    """The issuer a token CLAIMS, read without verifying anything. Used only to choose which
+    trusted key to verify with; the claim is not believed until that verification passes."""
+    try:
+        return jwt.decode(token, options={"verify_signature": False}).get("iss")
+    except jwt.InvalidTokenError:
+        return None
+
+
+def verify_token(token: str, settings: AuthSettings | Sequence[AuthSettings]) -> CallerIdentity:
+    """Fully verify a JWT against the trusted issuers and return the caller's identity.
+
+    Raises AuthError on any failure. A service passes one issuer (the supervisor trusts only the
+    customer identity provider) or several (an agent also trusts the supervisor's delegation).
+    """
+    trusted = [settings] if isinstance(settings, AuthSettings) else list(settings)
+    issuer = next((s for s in trusted if s.issuer == _named_issuer(token)), None)
+    if issuer is None:
+        raise AuthError("token rejected: issuer is not trusted")
     try:
         claims = jwt.decode(
             token,
-            settings.public_key,
+            issuer.public_key,
             # Pin ONE algorithm. Trusting the token's own "alg" header enables the classic
             # attacks: alg=none (no signature) and HS256 signed with our public key.
-            algorithms=[settings.algorithm],
-            issuer=settings.issuer,  # minted by our identity provider, not another one
-            audience=settings.audience,  # minted for this system, not another app
-            leeway=settings.leeway_seconds,
+            algorithms=[issuer.algorithm],
+            issuer=issuer.issuer,  # minted by this issuer, not another one
+            audience=issuer.audience,  # minted for this system, not another app
+            leeway=issuer.leeway_seconds,
             options={"require": REQUIRED_CLAIMS},  # also checks signature, exp, iat by default
         )
+        delegation = {}
+        if issuer.delegation:
+            delegation = {"delegated_by": claims["act"]["sub"], "transaction_id": claims["transaction_id"]}
         return CallerIdentity(
             user_id=claims["sub"],
             token_id=claims["jti"],
             expires_at=datetime.fromtimestamp(claims["exp"], tz=UTC),
+            **delegation,
         )
-    except (jwt.InvalidTokenError, ValueError, TypeError) as exc:
+    except (jwt.InvalidTokenError, ValueError, TypeError, KeyError) as exc:
         # One generic error type: callers return 401 without revealing which check failed.
         raise AuthError(f"token rejected: {type(exc).__name__}") from exc
+
+
+def trusted_issuers_from_env() -> list[AuthSettings]:
+    """Issuers an agent trusts: the customer identity provider, and the supervisor's delegation
+    when INTERNAL_JWT_ISSUER and INTERNAL_JWT_PUBLIC_KEY_FILE are set."""
+    trusted = [AuthSettings.from_env()]
+    issuer = os.environ.get("INTERNAL_JWT_ISSUER", "").strip()
+    key_file = os.environ.get("INTERNAL_JWT_PUBLIC_KEY_FILE", "").strip()
+    if issuer and key_file:
+        trusted.append(AuthSettings(
+            issuer=issuer,
+            audience=os.environ.get("INTERNAL_JWT_AUDIENCE", "dispute-agents").strip(),
+            public_key=Path(key_file).read_text(),
+            delegation=True,
+        ))
+    return trusted

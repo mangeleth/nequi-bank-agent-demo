@@ -14,7 +14,7 @@ from services.supervisor.store import InMemoryDisputeStore
 from shared.refund_policy import RefundPolicyConfig
 from shared.tracing import Tracing
 from tests.fakes import ScriptedChatModel
-from tests.jwt_helpers import SETTINGS, bearer
+from tests.jwt_helpers import DELEGATION, SETTINGS, SIGNER, bearer
 from tests.test_supervisor import DISPUTE, HAPPY, URL, FakeSpecialists
 
 KEY = dispute_key("user-1001", "TX-20261001000001")
@@ -130,7 +130,8 @@ class Supervisor:
         self.specialists = specialists or SlowSpecialists()
         self.gate = gate or InMemoryGate()
         self.app = create_app(auth=SETTINGS, model=self.model, specialists=self.specialists, tracing=Tracing(),
-                              policy=RefundPolicyConfig(), gate=self.gate, store=store or InMemoryDisputeStore())
+                              policy=RefundPolicyConfig(), gate=self.gate, store=store or InMemoryDisputeStore(),
+                              signer=SIGNER, delegation=DELEGATION)
 
     async def __aenter__(self):
         self._lifespan = self.app.router.lifespan_context(self.app)
