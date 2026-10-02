@@ -1,0 +1,19 @@
+---
+# Settings for the demo UI (ADR-0023). ${...} values are filled from .env by `make deploy`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-ui
+  namespace: disputes
+  labels:
+    app.kubernetes.io/name: demo-ui
+    app.kubernetes.io/part-of: dispute-triage
+data:
+  # The only service it calls: the intake API, exactly as a customer's app would
+  SUPERVISOR_URL: http://supervisor
+  # It signs demo login tokens for synthetic customers (it plays the bank's login, demo only)
+  JWT_ISSUER: ${JWT_ISSUER}
+  JWT_AUDIENCE: ${JWT_AUDIENCE}
+  DEMO_IDP_PRIVATE_KEY_FILE: /mnt/secrets/demo-idp-private-key
+  EVAL_RESULTS_DIR: /app/evals/results
+  DEMO_SCRIPT_FILE: /app/docs/DEMO_SCRIPT.md
