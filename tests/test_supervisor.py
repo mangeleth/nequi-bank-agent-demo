@@ -41,14 +41,14 @@ class FakeSpecialists:
     async def owns_transaction(self, caller, transaction_id):
         return self.owns
 
-    async def assess_fraud(self, dispute, token):
+    async def assess_fraud(self, dispute, token, traceparent=None):
         self.fraud_calls += 1
         self.tokens_received.append(token)
         if self.fraud_calls <= self.fraud_failures:
             raise SpecialistUnavailable("HTTP 502 from fraud agent")
         return self.fraud
 
-    async def reconcile_ledger(self, dispute, token):
+    async def reconcile_ledger(self, dispute, token, traceparent=None):
         self.ledger_calls += 1
         self.tokens_received.append(token)
         if self.ledger_calls <= self.ledger_failures:
@@ -219,7 +219,7 @@ def test_refund_history_unavailable_fails_closed():
 
 def test_unexpected_error_ends_in_human_review_not_a_crash():
     class BrokenSpecialists(FakeSpecialists):
-        async def reconcile_ledger(self, dispute, token):
+        async def reconcile_ledger(self, dispute, token, traceparent=None):
             raise RuntimeError("bug in our own code")
 
     response, _, _ = triage(HAPPY, BrokenSpecialists())

@@ -28,6 +28,7 @@ from typing import Annotated, Literal, TypedDict
 from langchain_core.exceptions import OutputParserException
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from pydantic import BaseModel, Field, ValidationError
@@ -44,6 +45,7 @@ from shared.schemas import (
     RefundApproval,
     SettlementStatus,
 )
+from shared.tracing import outgoing_traceparent
 
 MAX_SUPERVISOR_TURNS = 6  # routing decisions per dispute; a normal run takes 2-3
 MAX_CALLS_PER_AGENT = 2  # one call plus one retry
@@ -102,6 +104,7 @@ class TriageContext:
     token: str  # the customer's JWT, forwarded to the agents
     specialists: Specialists
     policy: RefundPolicyConfig
+    trace_id: str | None = None  # passed to the agents so their steps join this run's trace
 
 
 # --- Prompts ------------------------------------------------------------------------------------
@@ -245,20 +248,26 @@ def build_graph(model: BaseChatModel):
             return {"turns": turns, "route": "invalid", "steps": ["supervisor: no routing output"]}
         return {"turns": turns, "route": decision.next, "steps": [f"supervisor -> {decision.next}: {decision.reason}"]}
 
-    async def ledger_agent(state: TriageState, runtime: Runtime[TriageContext]) -> dict:
+    async def ledger_agent(state: TriageState, config: RunnableConfig, runtime: Runtime[TriageContext]) -> dict:
         calls = state.get("ledger_calls", 0) + 1
+        context = runtime.context
         try:
-            ledger = await runtime.context.specialists.reconcile_ledger(state["dispute"], runtime.context.token)
+            ledger = await context.specialists.reconcile_ledger(
+                state["dispute"], context.token, outgoing_traceparent(config, context.trace_id)
+            )
         except SpecialistUnavailable as exc:
             return {"ledger_calls": calls, "errors": [f"ledger_agent: {exc}"], "steps": ["ledger_agent: unavailable"]}
         return {"ledger": ledger, "ledger_calls": calls,
                 "steps": [f"ledger_agent: {ledger.settlement_status.value}, "
                           f"debited {ledger.debited_amount}, credited {ledger.credited_amount}"]}
 
-    async def fraud_agent(state: TriageState, runtime: Runtime[TriageContext]) -> dict:
+    async def fraud_agent(state: TriageState, config: RunnableConfig, runtime: Runtime[TriageContext]) -> dict:
         calls = state.get("fraud_calls", 0) + 1
+        context = runtime.context
         try:
-            fraud = await runtime.context.specialists.assess_fraud(state["dispute"], runtime.context.token)
+            fraud = await context.specialists.assess_fraud(
+                state["dispute"], context.token, outgoing_traceparent(config, context.trace_id)
+            )
         except SpecialistUnavailable as exc:
             return {"fraud_calls": calls, "errors": [f"fraud_agent: {exc}"], "steps": ["fraud_agent: unavailable"]}
         required = " (required by code: the ledger shows money missing)" if state.get("route") == "finish" else ""

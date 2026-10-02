@@ -193,17 +193,20 @@ demo-token:
 run-core:
 	.venv/bin/uvicorn services.core_systems.app:app --port 8001
 
+# The Langfuse keys are read from Key Vault for the process being started; they are never
+# written to disk.
+LANGFUSE_KEYS = \
+	LANGFUSE_PUBLIC_KEY=$$(az keyvault secret show --vault-name $(KEYVAULT_NAME) -n langfuse-public-key --query value -o tsv) \
+	LANGFUSE_SECRET_KEY=$$(az keyvault secret show --vault-name $(KEYVAULT_NAME) -n langfuse-secret-key --query value -o tsv)
+
 run-fraud:
-	.venv/bin/uvicorn services.fraud_agent.main:create_app --factory --port 8002
+	$(LANGFUSE_KEYS) .venv/bin/uvicorn services.fraud_agent.main:create_app --factory --port 8002
 
 run-ledger:
-	.venv/bin/uvicorn services.ledger_agent.main:create_app --factory --port 8003
+	$(LANGFUSE_KEYS) .venv/bin/uvicorn services.ledger_agent.main:create_app --factory --port 8003
 
-## The Langfuse keys are read from Key Vault for this process only; they are never written to disk
 run-supervisor:
-	LANGFUSE_PUBLIC_KEY=$$(az keyvault secret show --vault-name $(KEYVAULT_NAME) -n langfuse-public-key --query value -o tsv) \
-	LANGFUSE_SECRET_KEY=$$(az keyvault secret show --vault-name $(KEYVAULT_NAME) -n langfuse-secret-key --query value -o tsv) \
-	.venv/bin/uvicorn services.supervisor.main:create_app --factory --port 8004
+	$(LANGFUSE_KEYS) .venv/bin/uvicorn services.supervisor.main:create_app --factory --port 8004
 
 # ---------------------------------------------------------------------------------------------
 # Delivery (ADR-0004): make release SERVICE=core-systems

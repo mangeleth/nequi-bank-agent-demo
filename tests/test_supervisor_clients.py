@@ -78,11 +78,13 @@ async def test_valid_answers_are_parsed_and_identity_is_forwarded():
         return httpx.Response(200, json={"auto_refund_count": 2, "auto_refund_total": "65000.00"})
 
     client = specialists(handler)
-    assert (await client.assess_fraud(DISPUTE, "the-token")).risk_level == "low"
+    traceparent = "00-" + "a" * 32 + "-" + "b" * 16 + "-01"
+    assert (await client.assess_fraud(DISPUTE, "the-token", traceparent)).risk_level == "low"
     history = await client.refund_history(CALLER, 30)
 
     assert (history.auto_refund_count, history.auto_refund_total) == (2, Decimal("65000.00"))
     assert seen["fraud-agent"]["authorization"] == "Bearer the-token"  # the agent re-verifies it
+    assert seen["fraud-agent"]["traceparent"] == traceparent  # the agent's steps join our trace
     assert seen["core-systems"]["x-customer-id"] == "user-1001"
 
 

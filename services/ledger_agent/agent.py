@@ -48,7 +48,9 @@ def _dispute_message(request: DisputeRequest) -> HumanMessage:
     )
 
 
-async def reconcile(model: BaseChatModel, tools: list[BaseTool], request: DisputeRequest) -> LedgerReconciliation:
+async def reconcile(
+    model: BaseChatModel, tools: list[BaseTool], request: DisputeRequest, callbacks: list | None = None
+) -> LedgerReconciliation:
     """Run the agent for one dispute. The tools are already bound to the verified caller."""
     agent = create_agent(
         model=model,
@@ -57,7 +59,8 @@ async def reconcile(model: BaseChatModel, tools: list[BaseTool], request: Disput
         response_format=ToolStrategy(LedgerReconciliation),
         middleware=[ModelCallLimitMiddleware(run_limit=MAX_MODEL_CALLS, exit_behavior="end")],
     )
-    result = await agent.ainvoke({"messages": [_dispute_message(request)]})
+    config = {"callbacks": callbacks or [], "run_name": "ledger-agent"}  # callbacks: Langfuse tracing
+    result = await agent.ainvoke({"messages": [_dispute_message(request)]}, config=config)
     reconciliation = result.get("structured_response")
     if not isinstance(reconciliation, LedgerReconciliation):
         raise ReconciliationFailed("agent ended without a valid LedgerReconciliation")

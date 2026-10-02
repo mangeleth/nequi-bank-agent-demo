@@ -129,7 +129,9 @@ def create_app(
                 "transaction_id": dispute.transaction_id,
             },
         }
-        context = TriageContext(caller=identity, token=token, specialists=state.specialists, policy=state.policy)
+        context = TriageContext(
+            caller=identity, token=token, specialists=state.specialists, policy=state.policy, trace_id=trace_id
+        )
         try:
             final = await state.graph.ainvoke({"dispute": dispute}, config=config, context=context)
         except GraphRecursionError:

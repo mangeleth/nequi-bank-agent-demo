@@ -41,6 +41,11 @@ prevent this; it would only have repeated it.
   login session attached, and the trace URL is returned in the `TriageResult`. Tracing is an
   observer: if Langfuse is unreachable or not configured, triage still works. Keys come from
   Key Vault (ADR-0005). No masking is applied (ADR-0003, synthetic data).
+- **One trace across services:** the supervisor sends a W3C `traceparent` header to each agent,
+  naming its trace and the graph step making the call. The agent attaches its own run to that
+  step, so one trace shows every supervisor decision, agent run, tool call, model call, token
+  count, and cost. An agent called without the header starts its own trace. A malformed header
+  is ignored.
 
 ## Consequences
 - + A looping, confused, or manipulated supervisor ends in human review, never in an unbounded
@@ -49,11 +54,20 @@ prevent this; it would only have repeated it.
   (model inputs and outputs, latency, tokens, cost) in Langfuse.
 - + The supervisor skips the Fraud Agent when no refund is possible, saving a model run.
 - - A triage takes 5-15 seconds (3-4 supervisor model calls plus the agents' own).
-- - Supervisor and agents write separate traces; they are not yet joined into one.
+- + One trace per dispute, end to end (51 observations, 8 model calls, 4 tool calls, about
+  $0.02 for an automatic refund).
+- - All three services now hold the Langfuse keys (each mounts them from Key Vault with its own
+  identity).
+- - Nesting an agent's run under the calling step reads the Langfuse handler's internal run
+  table, because the public API has no accessor inside a graph node. If that changes, agents
+  still join the same trace, at the top level.
+- - An agent accepts a trace ID from its caller. A caller with a valid customer token could add
+  observations to a trace whose 128-bit ID it knows. Accepted for the demo.
 - - Routing rules now live in two places (prompt and code); the code is authoritative.
 
 ## Production delta
-One distributed trace across supervisor and agents (propagate trace context); run triage
+Accept trace context only from authenticated services (mTLS), and export through an
+OpenTelemetry collector so services do not hold Langfuse keys; run triage
 asynchronously (queue plus status endpoint) instead of holding an HTTP request open; a durable
 checkpointer so a human approval can pause and resume the graph (`interrupt`); persist verdicts
 under the dispute ID for idempotency; an evaluation set in CI scored on routing and verdicts;

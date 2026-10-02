@@ -24,6 +24,7 @@ from services.fraud_agent.agent import AssessmentFailed, assess, build_fraud_age
 from services.fraud_agent.tools import AgentContext, core_get
 from shared.auth import AuthError, AuthSettings, CallerIdentity, bearer_token, verify_token
 from shared.schemas import DisputeRequest, FraudAssessment
+from shared.tracing import Tracing, build_tracing
 
 log = logging.getLogger("fraud_agent")
 
@@ -33,6 +34,7 @@ def create_app(
     auth: AuthSettings | None = None,
     core: httpx.AsyncClient | None = None,
     model: BaseChatModel | None = None,
+    tracing: Tracing | None = None,
 ) -> FastAPI:
     """Build the app. Arguments default to real, env-configured dependencies; tests pass fakes."""
 
@@ -44,7 +46,9 @@ def create_app(
         app.state.auth = auth or AuthSettings.from_env()
         app.state.core = core or httpx.AsyncClient(base_url=os.environ["CORE_SYSTEMS_URL"], timeout=10)
         app.state.agent = build_fraud_agent(model or build_chat_model())
+        app.state.tracing = tracing or build_tracing()
         yield
+        app.state.tracing.shutdown()
         if core is None:
             await app.state.core.aclose()
 
@@ -59,7 +63,10 @@ def create_app(
 
     @app.post("/v1/fraud/assessments", response_model=FraudAssessment)
     async def create_assessment(
-        dispute: DisputeRequest, request: Request, identity: Annotated[CallerIdentity, Depends(caller)]
+        dispute: DisputeRequest,
+        request: Request,
+        identity: Annotated[CallerIdentity, Depends(caller)],
+        traceparent: Annotated[str | None, Header()] = None,
     ) -> FraudAssessment:
         context = AgentContext(caller=identity, core=request.app.state.core)
 
@@ -67,8 +74,10 @@ def create_app(
         if await core_get(context, f"/v1/core-banking/transactions/{dispute.transaction_id}") is None:
             raise HTTPException(404, "transaction not found")
 
+        # Called by the supervisor, the `traceparent` header makes this run part of its trace.
+        callbacks, _ = request.app.state.tracing.start(traceparent)
         try:
-            return await assess(request.app.state.agent, dispute, context)
+            return await assess(request.app.state.agent, dispute, context, callbacks)
         except AssessmentFailed as exc:
             log.error("assessment failed for %s: %s", dispute.transaction_id, exc)
             raise HTTPException(502, "assessment unavailable; escalate to human review") from exc

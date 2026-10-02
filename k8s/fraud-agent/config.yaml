@@ -18,3 +18,7 @@ data:
   JWT_ISSUER: ${JWT_ISSUER}
   JWT_AUDIENCE: ${JWT_AUDIENCE}
   JWT_PUBLIC_KEY_FILE: /etc/jwt/jwt-public.pem
+  # Langfuse: the keys are files mounted from Key Vault (see secrets.yaml), never env values
+  LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL}
+  LANGFUSE_PUBLIC_KEY_FILE: /mnt/secrets/langfuse-public-key
+  LANGFUSE_SECRET_KEY_FILE: /mnt/secrets/langfuse-secret-key

@@ -9,7 +9,7 @@ metadata:
     app.kubernetes.io/part-of: dispute-triage
   annotations:
     # Workload Identity: this ServiceAccount is federated to the managed identity id-ledger-agent,
-    # which holds the "Cognitive Services OpenAI User" role (ADR-0001). Not a secret.
+    # which may call Azure OpenAI and read the two Langfuse secrets in Key Vault. Not a secret.
     azure.workload.identity/client-id: ${WI_CLIENT_ID}
 # The pod never calls the Kubernetes API. The Entra ID token exchange uses a separate,
 # short-lived token that the workload identity webhook mounts.
@@ -96,9 +96,18 @@ spec:
             - name: jwt-public-key
               mountPath: /etc/jwt
               readOnly: true
+            - name: langfuse-keys
+              mountPath: /mnt/secrets
+              readOnly: true
       volumes:
         - name: tmp
           emptyDir: {}
         - name: jwt-public-key
           configMap:
             name: jwt-public-key
+        - name: langfuse-keys
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: ledger-agent-langfuse

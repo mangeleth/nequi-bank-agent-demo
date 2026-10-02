@@ -7,9 +7,51 @@ driver, ADR-0005), otherwise from environment variables (local development).
 
 import logging
 import os
+import re
 from pathlib import Path
 
 log = logging.getLogger("tracing")
+
+# W3C Trace Context header: 00-<32 hex trace id>-<16 hex parent span id>-<flags>.
+# The supervisor sends it to each agent so the agent's steps join the supervisor's trace.
+TRACEPARENT_HEADER = "traceparent"
+_TRACEPARENT = re.compile(r"^00-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}$")
+_NO_PARENT = "0" * 16
+
+
+def parse_traceparent(header: str | None) -> dict | None:
+    """Trace context from an incoming `traceparent` header, or None if absent or malformed."""
+    match = _TRACEPARENT.match(header or "")
+    if match is None:
+        return None
+    trace_id, parent_span_id = match.groups()
+    context = {"trace_id": trace_id}
+    if parent_span_id != _NO_PARENT:
+        context["parent_span_id"] = parent_span_id
+    return context
+
+
+def outgoing_traceparent(config: dict | None, trace_id: str | None) -> str | None:
+    """`traceparent` for a call made from inside a graph node: same trace, with the node's own
+    step as the parent, so the callee's steps appear nested under it.
+
+    Finding the node's step relies on the Langfuse handler's internal `_runs` table (the public
+    API has no accessor for it). If that changes, the callee's steps still join the same trace,
+    just at the top level instead of nested.
+    """
+    if trace_id is None:
+        return None
+    parent_span_id = _NO_PARENT
+    try:
+        manager = (config or {}).get("callbacks")
+        for handler in getattr(manager, "handlers", []):
+            span = getattr(handler, "_runs", {}).get(manager.parent_run_id)
+            if span is not None and re.fullmatch(r"[0-9a-f]{16}", str(span.id)):
+                parent_span_id = span.id
+                break
+    except Exception:  # tracing must never break the request
+        log.debug("could not determine the current span; joining the trace at the top level")
+    return f"00-{trace_id}-{parent_span_id}-01"
 
 
 def _setting(name: str) -> str:
@@ -28,14 +70,17 @@ class Tracing:
     def enabled(self) -> bool:
         return self._client is not None
 
-    def start(self) -> tuple[list, str | None]:
-        """Callbacks for one graph run, and the ID of the trace they will write to."""
+    def start(self, traceparent: str | None = None) -> tuple[list, str | None]:
+        """Callbacks for one run, and the ID of the trace they will write to.
+
+        With a valid `traceparent` the run joins the caller's trace; otherwise it starts its own.
+        """
         if self._client is None:
             return [], None
         from langfuse.langchain import CallbackHandler
 
-        trace_id = self._client.create_trace_id()
-        return [CallbackHandler(public_key=self._public_key, trace_context={"trace_id": trace_id})], trace_id
+        context = parse_traceparent(traceparent) or {"trace_id": self._client.create_trace_id()}
+        return [CallbackHandler(public_key=self._public_key, trace_context=context)], context["trace_id"]
 
     def url(self, trace_id: str | None) -> str | None:
         if self._client is None or trace_id is None:

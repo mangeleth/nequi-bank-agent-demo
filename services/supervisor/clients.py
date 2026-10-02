@@ -16,6 +16,7 @@ from pydantic import BaseModel, ValidationError
 from shared.auth import CallerIdentity
 from shared.refund_policy import CustomerRefundHistory
 from shared.schemas import DisputeRequest, FraudAssessment, LedgerReconciliation
+from shared.tracing import TRACEPARENT_HEADER
 
 
 class SpecialistUnavailable(Exception):
@@ -34,9 +35,13 @@ def _parse(contract: type[BaseModel], response: httpx.Response):
 class Specialists(Protocol):
     async def owns_transaction(self, caller: CallerIdentity, transaction_id: str) -> bool: ...
 
-    async def assess_fraud(self, dispute: DisputeRequest, token: str) -> FraudAssessment: ...
+    async def assess_fraud(
+        self, dispute: DisputeRequest, token: str, traceparent: str | None = None
+    ) -> FraudAssessment: ...
 
-    async def reconcile_ledger(self, dispute: DisputeRequest, token: str) -> LedgerReconciliation: ...
+    async def reconcile_ledger(
+        self, dispute: DisputeRequest, token: str, traceparent: str | None = None
+    ) -> LedgerReconciliation: ...
 
     async def refund_history(self, caller: CallerIdentity, window_days: int) -> CustomerRefundHistory: ...
 
@@ -50,24 +55,31 @@ class HttpSpecialists:
         self._ledger_url = ledger_url.rstrip("/")
         self._core_url = core_url.rstrip("/")
 
-    async def _ask_agent(self, url: str, dispute: DisputeRequest, token: str) -> httpx.Response:
+    async def _ask_agent(
+        self, url: str, dispute: DisputeRequest, token: str, traceparent: str | None
+    ) -> httpx.Response:
+        headers = {"Authorization": f"Bearer {token}"}
+        if traceparent:
+            headers[TRACEPARENT_HEADER] = traceparent  # the agent's steps join our trace
         try:
-            response = await self._http.post(
-                url, json=dispute.model_dump(mode="json"), headers={"Authorization": f"Bearer {token}"}
-            )
+            response = await self._http.post(url, json=dispute.model_dump(mode="json"), headers=headers)
         except httpx.HTTPError as exc:
             raise SpecialistUnavailable(f"{type(exc).__name__} calling {url}") from exc
         if response.status_code != 200:
             raise SpecialistUnavailable(f"HTTP {response.status_code} from {url}")
         return response
 
-    async def assess_fraud(self, dispute: DisputeRequest, token: str) -> FraudAssessment:
-        response = await self._ask_agent(f"{self._fraud_url}/v1/fraud/assessments", dispute, token)
-        return _parse(FraudAssessment, response)
+    async def assess_fraud(
+        self, dispute: DisputeRequest, token: str, traceparent: str | None = None
+    ) -> FraudAssessment:
+        url = f"{self._fraud_url}/v1/fraud/assessments"
+        return _parse(FraudAssessment, await self._ask_agent(url, dispute, token, traceparent))
 
-    async def reconcile_ledger(self, dispute: DisputeRequest, token: str) -> LedgerReconciliation:
-        response = await self._ask_agent(f"{self._ledger_url}/v1/ledger/reconciliations", dispute, token)
-        return _parse(LedgerReconciliation, response)
+    async def reconcile_ledger(
+        self, dispute: DisputeRequest, token: str, traceparent: str | None = None
+    ) -> LedgerReconciliation:
+        url = f"{self._ledger_url}/v1/ledger/reconciliations"
+        return _parse(LedgerReconciliation, await self._ask_agent(url, dispute, token, traceparent))
 
     async def _core_get(self, caller: CallerIdentity, path: str, **params) -> httpx.Response:
         try:
