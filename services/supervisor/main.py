@@ -136,6 +136,11 @@ def create_app(
             reason = f"the graph exceeded its hard limit of {recursion_limit} steps"
             log.error("triage of %s stopped: %s", dispute.transaction_id, reason)
             final = {"escalation_reason": reason, "steps": [f"escalate: {reason}"]}
+        except Exception:
+            # Anything unforeseen ends in human review, never in a crash or a silent drop.
+            log.exception("triage of %s failed unexpectedly", dispute.transaction_id)
+            reason = "an unexpected error stopped the triage"
+            final = {"escalation_reason": reason, "steps": [f"escalate: {reason}"]}
 
         return _result(dispute, final, state.tracing.url(trace_id))
 

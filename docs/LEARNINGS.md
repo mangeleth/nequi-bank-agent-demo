@@ -101,3 +101,21 @@ appeared in the model catalog but the subscription's quota for it was zero.
 availability before choosing a size or a model, and keep the choice in configuration.
 
 See [ADR-0002](adr/0002-aks-cluster-baseline.md) and [ADR-0010](adr/0010-model-choice-and-determinism.md).
+
+## 7. A sub-agent that answers with garbage crashed the request (Milestone 5)
+
+**What happened.** The supervisor handled an agent that was down (HTTP 502) or slow (timeout),
+but a `200 OK` with a body that did not match the contract raised an unhandled validation error:
+the customer would have seen a server error, and the dispute would have reached nobody.
+
+**What caught it.** Asking "do we have a test for a stubborn sub-agent?" and probing the HTTP
+client with a wrong-shaped answer. There was no such test.
+
+**What changed.** Every answer from another service is validated against its contract, and an
+unusable one becomes `SpecialistUnavailable`, which the graph retries once and then escalates.
+Any other unexpected error during a triage also ends in human review. `tests/test_supervisor_clients.py`
+runs nine kinds of misbehaving agent (wrong status, not JSON, wrong shape, contradictory fields,
+invented fields, empty body, timeout, refused connection) against both agents.
+
+**The lesson.** A circuit breaker you have not tested against a misbehaving dependency is a
+hope, not a control. "The agent is down" and "the agent is wrong" are different failures; test both.

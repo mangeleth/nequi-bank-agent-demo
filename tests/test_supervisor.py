@@ -217,6 +217,18 @@ def test_refund_history_unavailable_fails_closed():
     assert body["approval"] is None  # never auto-approved on missing history
 
 
+def test_unexpected_error_ends_in_human_review_not_a_crash():
+    class BrokenSpecialists(FakeSpecialists):
+        async def reconcile_ledger(self, dispute, token):
+            raise RuntimeError("bug in our own code")
+
+    response, _, _ = triage(HAPPY, BrokenSpecialists())
+    body = response.json()
+    assert response.status_code == 200
+    assert (body["status"], body["escalation_reason"]) == (
+        "pending_human_approval", "an unexpected error stopped the triage")
+
+
 # --- Identity ---------------------------------------------------------------------------------------
 
 

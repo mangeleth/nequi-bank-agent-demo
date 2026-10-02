@@ -11,6 +11,7 @@ from decimal import Decimal
 from typing import Protocol
 
 import httpx
+from pydantic import BaseModel, ValidationError
 
 from shared.auth import CallerIdentity
 from shared.refund_policy import CustomerRefundHistory
@@ -19,6 +20,15 @@ from shared.schemas import DisputeRequest, FraudAssessment, LedgerReconciliation
 
 class SpecialistUnavailable(Exception):
     """An agent or Core Systems did not give a usable answer."""
+
+
+def _parse(contract: type[BaseModel], response: httpx.Response):
+    """Validate another service's answer against our contract. A 200 with a body we cannot
+    use is treated like any other failure: the supervisor may retry, then escalates."""
+    try:
+        return contract.model_validate_json(response.content)
+    except ValidationError as exc:
+        raise SpecialistUnavailable(f"malformed {contract.__name__} from {response.request.url.host}") from exc
 
 
 class Specialists(Protocol):
@@ -40,7 +50,7 @@ class HttpSpecialists:
         self._ledger_url = ledger_url.rstrip("/")
         self._core_url = core_url.rstrip("/")
 
-    async def _ask_agent(self, url: str, dispute: DisputeRequest, token: str) -> dict:
+    async def _ask_agent(self, url: str, dispute: DisputeRequest, token: str) -> httpx.Response:
         try:
             response = await self._http.post(
                 url, json=dispute.model_dump(mode="json"), headers={"Authorization": f"Bearer {token}"}
@@ -49,14 +59,15 @@ class HttpSpecialists:
             raise SpecialistUnavailable(f"{type(exc).__name__} calling {url}") from exc
         if response.status_code != 200:
             raise SpecialistUnavailable(f"HTTP {response.status_code} from {url}")
-        return response.json()
+        return response
 
     async def assess_fraud(self, dispute: DisputeRequest, token: str) -> FraudAssessment:
-        return FraudAssessment(**await self._ask_agent(f"{self._fraud_url}/v1/fraud/assessments", dispute, token))
+        response = await self._ask_agent(f"{self._fraud_url}/v1/fraud/assessments", dispute, token)
+        return _parse(FraudAssessment, response)
 
     async def reconcile_ledger(self, dispute: DisputeRequest, token: str) -> LedgerReconciliation:
-        body = await self._ask_agent(f"{self._ledger_url}/v1/ledger/reconciliations", dispute, token)
-        return LedgerReconciliation(**body)
+        response = await self._ask_agent(f"{self._ledger_url}/v1/ledger/reconciliations", dispute, token)
+        return _parse(LedgerReconciliation, response)
 
     async def _core_get(self, caller: CallerIdentity, path: str, **params) -> httpx.Response:
         try:
@@ -78,10 +89,13 @@ class HttpSpecialists:
         response = await self._core_get(caller, "/v1/core-banking/refund-history", window_days=window_days)
         if response.status_code != 200:
             raise SpecialistUnavailable(f"HTTP {response.status_code} from core systems")
-        body = response.json()
-        return CustomerRefundHistory(
-            auto_refund_count=body["auto_refund_count"], auto_refund_total=Decimal(body["auto_refund_total"])
-        )
+        try:
+            body = response.json()
+            return CustomerRefundHistory(
+                auto_refund_count=int(body["auto_refund_count"]), auto_refund_total=Decimal(body["auto_refund_total"])
+            )
+        except (ValueError, KeyError, TypeError, ArithmeticError) as exc:
+            raise SpecialistUnavailable("malformed refund history from core systems") from exc
 
     async def ready(self) -> bool:
         """True when both agents report ready (each of them checks Core Systems)."""
