@@ -19,6 +19,7 @@ COPY .streamlit/config.toml .streamlit/config.toml
 # The dashboard and the demo script tab read these. They are baked in at build time, so the
 # dashboard shows the evaluation runs committed when the image was built (ADR-0023).
 COPY evals/results/ evals/results/
+COPY evals/judge/results/ evals/judge/results/
 COPY docs/DEMO_SCRIPT.md docs/DEMO_SCRIPT.md
 
 RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin app

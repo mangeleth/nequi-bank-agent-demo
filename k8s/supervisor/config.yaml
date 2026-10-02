@@ -30,5 +30,7 @@ data:
   # Dispute queue (ADR-0018): this service only SENDS; the triage worker receives.
   # No model, signing, or tracing settings here: the intake API does not run triages.
   QUEUE_BACKEND: servicebus
+  # A reviewer's approval goes here to be paid (ADR-0027). This process may only send to it.
+  REFUNDS_QUEUE: ${REFUNDS_QUEUE}
   SERVICEBUS_NAMESPACE: ${SERVICEBUS_NAMESPACE}
   SERVICEBUS_QUEUE: ${SERVICEBUS_QUEUE}

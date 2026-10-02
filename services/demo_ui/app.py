@@ -40,6 +40,14 @@ def langfuse() -> logic.LangfuseReader | None:
     return logic.LangfuseReader.from_env()
 
 
+@st.cache_resource
+def reviews() -> logic.ReviewClient:
+    return logic.ReviewClient(SUPERVISOR_URL)
+
+
+JUDGE_RESULTS_DIR = Path(os.environ.get("JUDGE_RESULTS_DIR", "evals/judge/results"))
+
+
 TYPE_COLOURS = {"GENERATION": MAGENTA, "TOOL": "#5A9EFB", "AGENT": DARK, "CHAIN": "#B9A6D6"}
 TYPE_NAMES = {"GENERATION": "llamada al modelo", "TOOL": "herramienta", "AGENT": "agente", "CHAIN": "paso"}
 
@@ -219,7 +227,84 @@ def customer_tab() -> None:
                     show_outcome(*done)
 
 
-# --- 2. The evaluation dashboard ----------------------------------------------------------------
+# --- 2. The reviewer: a person decides what the system sent to them (ADR-0027) ------------------
+
+
+def show_judgement(judgement: dict | None) -> None:
+    st.markdown(f"**Juez de IA:** {logic.judge_badge(judgement)}")
+    if rows := logic.judgement_rows(judgement):
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        st.caption(f"Prompt del juez {judgement.get('prompt_version')}. El juez califica la explicación contra "
+                   "los registros; no cambia ninguna decisión.")
+    elif judgement and judgement.get("result", {}).get("error"):
+        st.caption(f"No se pudo evaluar: {judgement['result']['error']}")
+
+
+def review_tab() -> None:
+    st.markdown("Eres una persona del banco que revisa las disputas que el sistema no pudo decidir solo. "
+                "Al **aprobar**, se paga lo que el libro contable muestra pendiente (no lo que escribas); al "
+                "**rechazar**, la disputa se cierra. Cada decisión queda en el registro de auditoría.")
+    reviewer = st.selectbox("Revisor", logic.REVIEWERS, key="reviewer")
+    if st.button("↻ Actualizar la cola"):
+        st.session_state.pop("review-selected", None)
+    try:
+        token = logic.login_reviewer(reviewer, login_settings())
+        queue = reviews().queue(token)
+    except Exception as exc:  # the API or the login key is unavailable: say so, do not crash the page
+        st.warning(f"La revisión no está disponible ahora ({type(exc).__name__}). Intenta de nuevo en unos segundos.")
+        return
+    st.subheader(f"Cola de revisión: {len(queue)} disputa(s) esperando")
+    if not queue:
+        st.info("No hay disputas esperando a una persona. Para crear una, en la app del cliente envía por "
+                "ejemplo la transferencia de 450.000 de user-1001 (supera el límite automático).")
+        return
+    st.dataframe(pd.DataFrame(logic.queue_rows(queue)), hide_index=True, width="stretch")
+
+    options = [item["dispute"]["dispute_id"] for item in queue]
+    chosen = st.selectbox("Disputa a revisar", options, key="review-selected",
+                          format_func=lambda d: next(f"{d[:8]} · {i['customer_id']} · {i['dispute']['transaction_id']}"
+                                                     for i in queue if i["dispute"]["dispute_id"] == d))
+    detail = reviews().dispute(token, chosen)
+    dispute, result = detail["dispute"], detail["dispute"].get("result") or {}
+
+    left, right = st.columns(2, gap="large")
+    with left:
+        st.markdown("**Lo que pidió el cliente**")
+        st.write(f"{detail['request'].get('claimed_amount')} COP · “{detail['request'].get('description') or '—'}”")
+        st.markdown(f"**Por qué llegó a una persona:** {logic.why_a_person(result)}")
+        if owed := logic.ledger_owed(result):
+            st.markdown(f"**Pendiente según el libro contable** (al revisarla el sistema): {owed}")
+        if fraud := result.get("fraud"):
+            st.markdown(f"**Riesgo de fraude:** {fraud['risk_score']} ({fraud['risk_level']})")
+        if checks := (result.get("approval") or {}).get("checks"):
+            st.markdown("**Reglas de la política de reembolsos**")
+            st.dataframe(pd.DataFrame(checks).rename(columns={"name": "regla", "passed": "cumple", "detail": "detalle"}),
+                         hide_index=True, width="stretch")
+    with right:
+        show_judgement(detail.get("judgement"))
+        if explanation := (result.get("verdict") or {}).get("explanation"):
+            st.markdown("**Explicación de los agentes** (texto del sistema, sin traducir)")
+            st.write(explanation)
+        with st.expander("Registro de auditoría"):
+            st.dataframe(pd.DataFrame(detail.get("events", [])), hide_index=True, width="stretch")
+
+    st.markdown("---")
+    st.markdown("**Tu decisión**")
+    decision = st.radio("Decisión", ["approve", "reject"], horizontal=True, key=f"decision-{chosen}",
+                        format_func=lambda d: "✅ Aprobar el reembolso" if d == "approve" else "⛔ Rechazar")
+    note = st.text_area("Motivo (obligatorio, queda en la auditoría)", key=f"note-{chosen}", max_chars=500)
+    if st.button("Confirmar decisión", type="primary", disabled=len(note.strip()) < 5):
+        response = reviews().decide(token, chosen, decision, note.strip())
+        if response.status_code == 200:
+            view = response.json()
+            st.success(f"Decisión registrada: {logic.STATUS_LABELS.get(view['status'], view['status'])}. "
+                       "Si la aprobaste, el pagador la paga en segundos; el cliente lo ve en su app.")
+            st.session_state.pop("review-selected", None)
+        else:
+            st.error(f"HTTP {response.status_code}: {response.json().get('detail', response.text)}")
+
+
+# --- 3. The evaluation dashboard ----------------------------------------------------------------
 
 RUN_COLUMNS = {
     "run": "evaluación", "commit": "commit", "target": "entorno", "evaluated": "evaluadas",
@@ -264,6 +349,49 @@ def dashboard_tab() -> None:
     st.markdown("**Última evaluación, escenario por escenario**")
     st.dataframe(pd.DataFrame(logic.latest_scenarios(RESULTS_DIR)), hide_index=True, width="stretch")
 
+    judge_health()
+
+
+def judge_health() -> None:
+    """The LLM judge's calibration against labelled answers, run by run (ADR-0026)."""
+    st.markdown("---")
+    st.subheader("🧑‍⚖️ Salud del juez de IA")
+    st.markdown("El juez califica cada explicación contra los registros. Se calibra contra respuestas etiquetadas: "
+                "**acuerdo** (coincide con la etiqueta) y **aprobaciones inseguras** (la etiqueta dice que está mal y "
+                "el juez la aprueba: el error peligroso). El conjunto **held-out** nunca se usa para ajustar el "
+                "prompt: mide si lo aprendido generaliza.")
+    rows = logic.load_calibrations(JUDGE_RESULTS_DIR)
+    if not rows:
+        st.info("No hay calibraciones del juez en esta imagen.")
+        return
+    latest = rows[-1]["run"]
+    current = [r for r in rows if r["run"] == latest]
+    cols = st.columns(len(current) * 2)
+    for i, r in enumerate(sorted(current, key=lambda r: r["split"], reverse=True)):
+        cols[2 * i].metric(f"Acuerdo · {r['split']}", f"{r['agreement']:.0%}")
+        cols[2 * i + 1].metric(f"Aprobaciones inseguras · {r['split']}", r["unsafe_passes"])
+    history = pd.DataFrame(rows)
+    chart = history.pivot_table(index="prompt", columns="split", values="agreement")
+    st.line_chart(chart, y_label="acuerdo", x_label="versión del prompt", color=[MAGENTA, DARK])
+    show = history[["run", "prompt", "split", "cases", "agreement", "unsafe_passes",
+                    "groundedness_agreement", "groundedness_unsafe", "clarity_unsafe"]]
+    st.dataframe(show.rename(columns={"run": "calibración", "prompt": "prompt", "split": "conjunto", "cases": "casos",
+                                      "agreement": "acuerdo", "unsafe_passes": "aprob. inseguras",
+                                      "groundedness_agreement": "acuerdo · registros",
+                                      "groundedness_unsafe": "inseguras · registros",
+                                      "clarity_unsafe": "inseguras · claridad"}),
+                 hide_index=True, width="stretch")
+    try:
+        recent = reviews().judgements(logic.login_reviewer(logic.REVIEWERS[0], login_settings()))
+    except Exception:
+        recent = []
+    if recent:
+        st.markdown("**Últimas disputas evaluadas por el juez**")
+        st.dataframe(pd.DataFrame([{"disputa": str(j["dispute_id"])[:8], "transferencia": j["transaction_id"],
+                                    "estado": j["business_status"], "juez": logic.judge_badge(j),
+                                    "prompt": j["prompt_version"], "evaluada": str(j["judged_at"])[:16]}
+                                   for j in recent]), hide_index=True, width="stretch")
+
 
 # --- 3. The demo script ---------------------------------------------------------------------------
 
@@ -290,9 +418,12 @@ st.caption("Demo independiente para una entrevista: no es un producto de Nequi n
            "clientes y datos sintéticos; nunca ingreses datos personales o bancarios reales. Cada cliente y "
            "transferencia se revisa una sola vez hasta que se reinicia la demo; si la envías de nuevo, verás la "
            "disputa existente, sin costo.")
-customer, dashboard, script = st.tabs(["📱 App del cliente", "📊 Tablero de evaluación", "🗺️ Guion de la demo"])
+customer, reviewer_tab, dashboard, script = st.tabs(
+    ["📱 App del cliente", "👤 Revisión (supervisor)", "📊 Tablero de evaluación", "🗺️ Guion de la demo"])
 with customer:
     customer_tab()
+with reviewer_tab:
+    review_tab()
 with dashboard:
     dashboard_tab()
 with script:

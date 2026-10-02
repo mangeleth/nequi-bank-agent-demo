@@ -394,3 +394,117 @@ def missing_from_trace(observations: list[dict], steps: list[str]) -> list[str]:
            for node in [step.split(":")[0].split(" ->")[0].strip()] if node in _AGENT_SERVICES}
     arrived = {o.get("name") for o in observations if o.get("type") == "AGENT"}
     return sorted(ran - arrived)
+
+
+# --- The reviewer: a person who decides what the system sent to them (ADR-0027) ------------------
+
+REVIEWERS = ["ops-ana", "ops-luis"]  # synthetic bank employees with the reviewer role
+
+
+def login_reviewer(reviewer_id: str, settings: LoginSettings) -> str:
+    """A short-lived token for a synthetic reviewer: the same signature as a customer's, plus the
+    reviewer role. The intake API checks the role on every review route."""
+    if reviewer_id not in REVIEWERS:
+        raise ValueError(f"{reviewer_id} is not a demo reviewer")
+    now = datetime.now(UTC)
+    claims = {"iss": settings.issuer, "aud": settings.audience, "sub": reviewer_id, "jti": uuid.uuid4().hex,
+              "iat": now, "exp": now + settings.lifetime, "roles": ["dispute-reviewer"]}
+    return jwt.encode(claims, settings.private_key_pem, algorithm="RS256")
+
+
+class ReviewClient:
+    """The reviewer's calls to the intake API."""
+
+    def __init__(self, base_url: str, http: httpx.Client | None = None) -> None:
+        self._http = http or httpx.Client(base_url=base_url.rstrip("/"), timeout=30)
+
+    def _get(self, token: str, path: str):
+        response = self._http.get(path, headers={"Authorization": f"Bearer {token}"})
+        response.raise_for_status()
+        return response.json()
+
+    def queue(self, token: str) -> list[dict]:
+        return self._get(token, "/v1/reviews/queue")
+
+    def dispute(self, token: str, dispute_id: str) -> dict:
+        return self._get(token, f"/v1/reviews/disputes/{dispute_id}")
+
+    def judgements(self, token: str) -> list[dict]:
+        return self._get(token, "/v1/reviews/judgements")
+
+    def decide(self, token: str, dispute_id: str, decision: str, note: str) -> httpx.Response:
+        return self._http.post(f"/v1/reviews/disputes/{dispute_id}/decision", json={"decision": decision, "note": note},
+                               headers={"Authorization": f"Bearer {token}"})
+
+
+JUDGE_LABELS = {True: "✅ aprobada", False: "❌ con problemas", None: "⚠️ no se pudo evaluar"}
+
+
+def judge_badge(judgement: dict | None) -> str:
+    return "— sin evaluar" if not judgement else JUDGE_LABELS[judgement.get("passed")]
+
+
+def why_a_person(result: dict | None) -> str:
+    """Why the dispute is waiting for a person, in the reviewer's language."""
+    result = result or {}
+    if reason := result.get("escalation_reason"):
+        return reason
+    failed = [c["name"] for c in (result.get("approval") or {}).get("checks", []) if not c["passed"]]
+    if failed:
+        return "reglas que no se cumplieron: " + ", ".join(failed)
+    if (result.get("verdict") or {}).get("decision") == "escalate_fraud":
+        return "riesgo de fraude: lo revisa el equipo de seguridad"
+    return "la revisión automática no terminó"
+
+
+def queue_rows(items: list[dict]) -> list[dict]:
+    rows = []
+    for item in items:
+        dispute = item["dispute"]
+        rows.append({"disputa": dispute["dispute_id"][:8], "cliente": item["customer_id"],
+                     "transferencia": dispute["transaction_id"], "monto reclamado": item["request"].get("claimed_amount"),
+                     "por qué llegó a una persona": why_a_person(dispute.get("result")),
+                     "juez": judge_badge(item.get("judgement")), "recibida": dispute["created_at"][:16].replace("T", " ")})
+    return rows
+
+
+def ledger_owed(result: dict | None) -> str | None:
+    """What the ledger showed owed when the system looked, for the reviewer's information. The
+    approval itself re-reads the ledger: this figure is never what gets paid."""
+    ledger = (result or {}).get("ledger")
+    if not ledger:
+        return None
+    from decimal import Decimal
+
+    return f"{Decimal(ledger['debited_amount']) - Decimal(ledger['credited_amount'])} {ledger.get('currency', 'COP')}"
+
+
+CRITERIA_ES = {"groundedness": "Basada en los registros", "completeness": "Completa", "clarity": "Clara"}
+
+
+def judgement_rows(judgement: dict | None) -> list[dict]:
+    result = (judgement or {}).get("result") or {}
+    return [{"criterio": CRITERIA_ES[name], "resultado": "✅ cumple" if result[name]["passed"] else "❌ no cumple",
+             "razón del juez": result[name]["reason"]} for name in CRITERIA_ES if name in result]
+
+
+# --- The judge's health: calibration runs (ADR-0026) ------------------------------------------------
+
+
+def load_calibrations(results_dir: Path) -> list[dict]:
+    """One row per calibration run and split: agreement and unsafe passes, oldest first."""
+    rows = []
+    for path in sorted(results_dir.glob("*.json")):
+        try:
+            run = json.loads(path.read_text())
+        except ValueError:
+            continue
+        for split, report in run.get("report", {}).items():
+            row = {"run": run["meta"]["date"], "prompt": run["meta"].get("prompt_version", "?"),
+                   "split": "tuning" if split == "tuning" else "held-out", "cases": report["cases"],
+                   "agreement": report["overall_agreement"], "unsafe_passes": report["unsafe_passes"]}
+            for name, c in report["criteria"].items():
+                row[f"{name}_agreement"] = c["agreement"]
+                row[f"{name}_unsafe"] = c["unsafe_passes"]
+            rows.append(row)
+    return rows

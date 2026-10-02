@@ -145,9 +145,12 @@ def test_the_streamlit_page_renders_with_the_real_reports(monkeypatch):
     page = AppTest.from_file(str(Path(__file__).resolve().parent.parent / "services/demo_ui/app.py"), default_timeout=30).run()
 
     assert not page.exception
-    assert [tab.label for tab in page.tabs] == ["📱 App del cliente", "📊 Tablero de evaluación", "🗺️ Guion de la demo"]
+    assert [tab.label for tab in page.tabs] == ["📱 App del cliente", "👤 Revisión (supervisor)",
+                                                "📊 Tablero de evaluación", "🗺️ Guion de la demo"]
+    assert any("La revisión no está disponible" in w.value for w in page.warning)  # no API here: no crash
     metrics = {m.label: m.value for m in page.metric}
-    assert set(metrics) == {"Solicitudes evaluadas", "Solicitudes exitosas", "Tasa de éxito", "Costo total", "Costo por éxito"}
+    assert {"Solicitudes evaluadas", "Solicitudes exitosas", "Tasa de éxito", "Costo total", "Costo por éxito"} <= set(metrics)
+    assert {"Acuerdo · held-out", "Aprobaciones inseguras · held-out"} <= set(metrics)  # the judge's health
     assert metrics["Tasa de éxito"].endswith("%") and metrics["Costo total"].startswith("$")
 
 
@@ -254,3 +257,55 @@ def test_the_scenario_table_says_what_decided_each_one(tmp_path):
     paths = {row["escenario"]: (row["camino"], row["resultado"]) for row in logic.latest_scenarios(tmp_path)}
     assert paths == {"agents": ("🤖 agentes", "refund_paid"), "incident": ("⚡ incidente", "refund_paid"),
                      "duplicate": ("— sin revisión", "refund_paid"), "refused": ("— sin revisión", "—")}
+
+
+# --- The reviewer (ADR-0027) and the judge's health (ADR-0026) ------------------------------------
+
+
+def test_a_reviewer_token_from_the_ui_is_accepted_only_as_a_reviewer():
+    from shared.auth import verify_reviewer_token
+
+    token = logic.login_reviewer("ops-ana", LOGIN)
+    assert verify_reviewer_token(token, SETTINGS).reviewer_id == "ops-ana"
+    with pytest.raises(ValueError):
+        logic.login_reviewer("user-1001", LOGIN)
+
+
+def test_the_reviewer_works_the_queue_through_the_real_intake_api():
+    from tests.test_review import TO_A_PERSON
+    from tests.test_supervisor import FakeSpecialists
+
+    specialists = FakeSpecialists(debited="450000.00")
+    with TestClient(_supervisor(specialists, script=TO_A_PERSON)) as http:
+        customer = logic.IntakeClient("http://supervisor", http=http)
+        token = logic.login("user-1001", LOGIN)
+        submitted = customer.submit(token, logic.find_transaction("user-1001", "TX-20261001000002"), "no llegó")
+        _follow(customer, token, submitted.json()["dispute_id"])
+
+        reviewer = logic.ReviewClient("http://supervisor", http=http)
+        rtoken = logic.login_reviewer("ops-ana", LOGIN)
+        queue = reviewer.queue(rtoken)
+        rows = logic.queue_rows(queue)
+        decided = reviewer.decide(rtoken, queue[0]["dispute"]["dispute_id"], "approve", "verified in the ledger")
+        view, _ = _follow(customer, token, submitted.json()["dispute_id"])
+
+    assert rows[0]["cliente"] == "user-1001" and "under_amount_limit" in rows[0]["por qué llegó a una persona"]
+    assert rows[0]["juez"] == "— sin evaluar"
+    assert decided.status_code == 200 and view["status"] == "refund_paid"
+    assert view["result"]["approval"]["approved_by"] == "ops-ana"
+
+
+def test_judgement_rows_and_badges_in_spanish():
+    judgement = {"passed": False, "prompt_version": "v3", "result": {
+        "groundedness": {"passed": False, "reason": "invented cause"},
+        "completeness": {"passed": True, "reason": "ok"}, "clarity": {"passed": True, "reason": "ok"}}}
+    assert logic.judge_badge(judgement) == "❌ con problemas" and logic.judge_badge(None) == "— sin evaluar"
+    assert logic.judgement_rows(judgement)[0] == {"criterio": "Basada en los registros", "resultado": "❌ no cumple",
+                                                  "razón del juez": "invented cause"}
+
+
+def test_the_judge_health_reads_every_calibration_run():
+    rows = logic.load_calibrations(Path("evals/judge/results"))
+    assert {r["prompt"] for r in rows} >= {"v1", "v2", "v3"}
+    assert {r["split"] for r in rows} == {"tuning", "held-out"}
+    assert all(0 <= r["agreement"] <= 1 and r["unsafe_passes"] >= 0 for r in rows)
