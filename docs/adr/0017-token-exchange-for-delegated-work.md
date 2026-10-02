@@ -27,10 +27,14 @@ replay it as the customer.
   transaction other than the one it names, before any model call.
 - **The supervisor does not accept its own tokens.** Its endpoints trust only the customer
   identity provider, so a delegated token cannot open or read a dispute.
-- **The signing key is a Key Vault key, not a secret.** It is generated inside Key Vault, allowed
-  to sign and verify only, and cannot be exported. The supervisor's identity holds
-  `Key Vault Crypto User` on that one key: it sends Key Vault a digest and receives a signature.
-  No pod ever holds the private key. The public half is published to the agents as a ConfigMap.
+- **The signing key is a Key Vault key, not a secret.** It is generated inside Key Vault, the key
+  itself permits only sign and verify, and it is not exportable. The supervisor sends Key Vault
+  a digest and receives a signature, so no pod holds the private key. The public half is
+  published to the agents as a ConfigMap.
+- **Role:** the supervisor's identity holds the built-in `Key Vault Crypto User` on that one key.
+  Azure has no built-in sign-only role, and this one is broader than needed: besides `sign` it
+  allows `update` (change the key's settings) and `backup` (download an encrypted backup that
+  can be restored into another vault in the same subscription). See Consequences and issue #14.
 - **Two signers behind one interface:** `KeyVaultSigner` in the cluster, `LocalKeySigner` with a
   key file for tests and local runs.
 
@@ -42,7 +46,10 @@ replay it as the customer.
 - - Each run makes one signing call to Key Vault (tens of milliseconds); if Key Vault is
   unreachable the run fails and the dispute goes to a person.
 - - A compromised supervisor could request signatures for any customer while the compromise
-  lasts. It cannot take the key away, and every signature is in Key Vault's audit log.
+  lasts; every signature is in Key Vault's audit log. Because of the broad built-in role it
+  could also disable or reconfigure the key, or take an encrypted backup of it. It cannot read
+  the private key. A custom role with only `keys/read` and `keys/sign/action` removes the
+  extra permissions (issue #14).
 - - Rotating the key means publishing the new public half before the supervisor uses the new
   version; there is no automatic rotation yet.
 - - Core Systems still trusts the `X-Customer-Id` header from the agents (ADR-0008).
