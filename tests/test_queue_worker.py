@@ -91,9 +91,10 @@ async def test_a_failed_delivery_is_retried_and_the_dispute_still_finishes():
         dispute_id = (await sup.post()).json()["dispute_id"]
         view = await sup.finished(dispute_id)
 
-    assert (view["execution_status"], view["status"]) == ("finished", "refund_approved")
-    assert await notes(store, dispute_id) == [
-        "dispute received", "run started", "run restarted after a failed delivery", "run finished"]
+    assert (view["execution_status"], view["status"]) == ("finished", "refund_paid")
+    trail = await notes(store, dispute_id)
+    assert trail[:4] == ["dispute received", "run started", "run restarted after a failed delivery", "run finished"]
+    assert len(trail) == 5 and trail[4].startswith("refund paid: RF-")  # the payment is in the audit trail
     assert (await store.load(UUID(dispute_id))).attempts == 2
 
 
@@ -131,7 +132,7 @@ async def test_a_worker_that_dies_mid_run_is_replaced_by_redelivery():
         await queue.expire_locks()  # what the real queue does when the lock runs out
         view = await sup.finished(dispute_id)
 
-    assert (view["execution_status"], view["status"]) == ("finished", "refund_approved")
+    assert (view["execution_status"], view["status"]) == ("finished", "refund_paid")
     assert "run restarted after a failed delivery" in await notes(store, dispute_id)
 
 
@@ -187,7 +188,7 @@ async def test_a_run_never_starts_more_often_than_the_delivery_limit():
 async def test_happy_path_still_works_through_the_queue(gate):
     async with Supervisor(gate=gate()) as sup:
         dispute_id = (await sup.post()).json()["dispute_id"]
-        assert (await sup.finished(dispute_id))["status"] == "refund_approved"
+        assert (await sup.finished(dispute_id))["status"] == "refund_paid"
 
 
 # --- Intake API and worker as separate processes -------------------------------------------------
@@ -229,7 +230,7 @@ async def test_intake_only_accepts_and_a_separate_worker_does_the_work():
         async with worker.router.lifespan_context(worker):
             view = await intake.finished(dispute_id)
 
-        assert (view["execution_status"], view["status"]) == ("finished", "refund_approved")
+        assert (view["execution_status"], view["status"]) == ("finished", "refund_paid")
         assert len(worker_model.seen) == len(HAPPY) and intake.model.seen == []
 
 

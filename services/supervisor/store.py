@@ -75,6 +75,11 @@ class DisputeStore(Protocol):
     async def finish(self, dispute_id: UUID, result: TriageResult) -> bool:
         """running -> finished, with the business status and message from the result."""
 
+    async def settle(self, dispute_id: UUID, *, expected: DisputeStatus, result: TriageResult, note: str) -> bool:
+        """After a finished run: move the business status on from `expected` (e.g. refund_approved
+        -> refund_paid), with the new result. False if the dispute is not finished or no longer
+        in `expected`, so two workers cannot both settle it."""
+
     async def fail(self, dispute_id: UUID, customer_message: str, note: str) -> bool:
         """queued/running -> failed; the dispute itself goes to a person."""
 
@@ -149,6 +154,15 @@ class InMemoryDisputeStore:
         return self._change(
             dispute_id, (ExecutionStatus.RUNNING.value,), "run finished",
             execution_status=ExecutionStatus.FINISHED, business_status=result.status,
+            customer_message=result.customer_message, result=result.model_dump(mode="json"),
+        )
+
+    async def settle(self, dispute_id, *, expected, result, note):
+        record = self._by_id.get(dispute_id)
+        if record is None or record.business_status != expected:
+            return False
+        return self._change(
+            dispute_id, (ExecutionStatus.FINISHED.value,), note, business_status=result.status,
             customer_message=result.customer_message, result=result.model_dump(mode="json"),
         )
 
@@ -287,6 +301,16 @@ class PostgresDisputeStore:
             "customer_message = %(customer_message)s, result = %(result)s",
             business_status=result.status.value, customer_message=result.customer_message,
             result=Jsonb(result.model_dump(mode="json")))
+
+    async def settle(self, dispute_id, *, expected, result, note):
+        from psycopg.types.json import Jsonb
+
+        return await self._change(
+            dispute_id, (ExecutionStatus.FINISHED.value,), note,
+            "business_status = %(business_status)s, customer_message = %(customer_message)s, result = %(result)s",
+            also="AND business_status = %(expected_business)s",
+            business_status=result.status.value, customer_message=result.customer_message,
+            result=Jsonb(result.model_dump(mode="json")), expected_business=expected.value)
 
     async def fail(self, dispute_id, customer_message, note):
         return await self._change(

@@ -11,14 +11,14 @@ from decimal import Decimal
 import pytest
 from fastapi.testclient import TestClient
 
-from services.supervisor.clients import SpecialistUnavailable
+from services.supervisor.clients import RefundRefused, SpecialistUnavailable
 from services.supervisor.dedup import InMemoryGate
 from services.supervisor.graph import MAX_CALLS_PER_AGENT, MAX_SUPERVISOR_TURNS, breaker
 from services.supervisor.main import create_app
 from services.supervisor.store import InMemoryDisputeStore
 from shared.auth import verify_token
 from shared.refund_policy import CustomerRefundHistory, RefundPolicyConfig
-from shared.schemas import FraudAssessment, LedgerReconciliation
+from shared.schemas import FraudAssessment, LedgerReconciliation, RefundPayment
 from shared.tracing import Tracing
 from tests.fakes import ScriptedChatModel, ai
 from tests.fakes import tool_call as call
@@ -34,7 +34,8 @@ class FakeSpecialists:
     """Stands in for the Fraud Agent, Ledger Agent, and Core Systems."""
 
     def __init__(self, *, status="failed", debited="50000.00", credited="0.00", risk=(0.08, "low"),
-                 fraud_failures=0, ledger_failures=0, history=(0, "0"), history_down=False, owns=True):
+                 fraud_failures=0, ledger_failures=0, history=(0, "0"), history_down=False, owns=True,
+                 pay="paid", pay_failures=0):
         self.ledger = LedgerReconciliation(transaction_id=TX, settlement_status=status, debited_amount=debited,
                                            credited_amount=credited, summary="From the ledger.")
         self.fraud = FraudAssessment(transaction_id=TX, risk_score=risk[0], risk_level=risk[1], rationale="Signals.")
@@ -43,6 +44,11 @@ class FakeSpecialists:
         self.history_down, self.owns = history_down, owns
         self.fraud_calls = self.ledger_calls = 0
         self.tokens_received = []
+        # The ledger's side of a payment: "paid", "refused" (a definite no), or "down" (no answer).
+        # `pay_failures` makes the first N payment calls get no answer, then `pay` applies.
+        self.pay, self.pay_failures = pay, pay_failures
+        self.pay_calls: list[tuple[str, str, Decimal, str]] = []
+        self.paid: dict[str, RefundPayment] = {}  # idempotency key -> refund, as the ledger keeps it
 
     async def owns_transaction(self, caller, transaction_id):
         return self.owns
@@ -65,6 +71,18 @@ class FakeSpecialists:
         if self.history_down:
             raise SpecialistUnavailable("HTTP 503 from core systems")
         return self.history
+
+    async def pay_refund(self, user_id, transaction_id, amount, idempotency_key):
+        self.pay_calls.append((user_id, transaction_id, amount, idempotency_key))
+        if len(self.pay_calls) <= self.pay_failures or self.pay == "down":
+            raise SpecialistUnavailable("ConnectTimeout calling the ledger")
+        if self.pay == "refused":
+            raise RefundRefused("amount_mismatch", "the ledger shows 49000.00 owed, not 50000.00")
+        if idempotency_key not in self.paid:  # the same key returns the same refund
+            self.paid[idempotency_key] = RefundPayment(
+                refund_id=f"RF-{len(self.paid) + 1:016d}", amount=amount, currency="COP",
+                executed_at=datetime.now(UTC), idempotency_key=idempotency_key)
+        return self.paid[idempotency_key]
 
     async def ready(self):
         return True
@@ -135,11 +153,13 @@ def test_small_clear_refund_is_auto_approved():
     body = response.json()
 
     assert response.status_code == 200
-    assert body["status"] == "refund_approved"  # approved, not paid: never "resolved"
+    assert body["status"] == "refund_paid"  # approved by the policy, then confirmed by the ledger
     assert body["verdict"]["decision"] == "refund_recommended"
     assert (body["approval"]["route"], body["approval"]["approved_amount"]) == ("auto_approved", "50000.00")
+    assert (body["payment"]["amount"], body["payment"]["idempotency_key"]) == (
+        "50000.00", f"dispute:{body['dispute_id']}")
     assert [step.split(":")[0].split(" ->")[0] for step in body["steps"]] == [
-        "supervisor", "ledger_agent", "supervisor", "fraud_agent", "supervisor", "verdict", "policy"]
+        "supervisor", "ledger_agent", "supervisor", "fraud_agent", "supervisor", "verdict", "policy", "pay"]
 
 
 def test_settled_transfer_needs_no_fraud_assessment():
@@ -175,7 +195,7 @@ def test_customer_message_is_built_from_ledger_and_policy_facts():
     response, _, _ = triage(HAPPY)
     assert response.json()["customer_message"] == (
         "The transfer is marked as failed: 50000.00 COP was debited from your account and 0.00 COP reached "
-        "the recipient. A refund of 50000.00 COP has been approved. It has not been paid yet.")
+        "the recipient. A refund of 50000.00 COP has been paid back to your account.")
 
 
 def test_high_fraud_risk_goes_to_fraud_operations():
@@ -333,7 +353,46 @@ def test_the_two_statuses_are_reported_separately():
     assert outcome.view["dispute_id"] == outcome.json()["dispute_id"] == outcome.json()["verdict"]["dispute_id"]
 
 
-def test_an_approved_refund_is_never_reported_as_paid_or_resolved():
-    outcome, _, _ = triage(HAPPY)
-    assert outcome.view["status"] == "refund_approved"
-    assert "It has not been paid yet." in outcome.view["customer_message"]
+# --- Paying the approved refund (ADR-0020) ---------------------------------------------------------
+
+
+def test_paid_only_when_the_ledger_confirms_and_the_amount_is_the_policys():
+    outcome, _, specialists = triage(HAPPY)
+    (user_id, transaction_id, amount, key), = specialists.pay_calls
+
+    assert (user_id, transaction_id, amount) == ("user-1001", TX, Decimal("50000.00"))  # the policy's amount
+    assert key == f"dispute:{outcome.view['dispute_id']}"
+    assert outcome.view["status"] == "refund_paid"
+    assert outcome.json()["payment"]["refund_id"] == specialists.paid[key].refund_id
+
+
+def test_a_refund_the_ledger_refuses_goes_to_a_person_and_is_not_retried():
+    outcome, _, specialists = triage(HAPPY, FakeSpecialists(pay="refused"))
+
+    assert len(specialists.pay_calls) == 1  # a definite no: asking again would get the same answer
+    assert (outcome.view["execution_status"], outcome.view["status"]) == ("finished", "pending_human_approval")
+    assert "amount_mismatch" in outcome.json()["escalation_reason"]
+    assert outcome.json()["payment"] is None
+    assert "could not be paid automatically" in outcome.view["customer_message"]
+    assert "has been paid" not in outcome.view["customer_message"]
+
+
+def test_no_answer_from_the_ledger_is_retried_without_asking_the_model_again():
+    outcome, model, specialists = triage(HAPPY, FakeSpecialists(pay_failures=1))
+
+    assert outcome.view["status"] == "refund_paid"
+    assert len(specialists.pay_calls) == 2 and len({call[3] for call in specialists.pay_calls}) == 1  # same key
+    assert len(specialists.paid) == 1  # paid once
+    # The retry resumed from the saved approval: the agents and the model were not asked again.
+    assert specialists.ledger_calls == specialists.fraud_calls == 1
+    assert len(model.seen) == len(HAPPY)
+
+
+def test_a_payment_still_unknown_after_the_last_delivery_goes_to_a_person():
+    outcome, _, specialists = triage(HAPPY, FakeSpecialists(pay="down"))
+
+    assert len(specialists.pay_calls) == 2  # one attempt and one retry, then stop
+    assert outcome.view["status"] == "pending_human_approval"
+    reason = outcome.json()["escalation_reason"]
+    assert "did not answer" in reason and f"dispute:{outcome.view['dispute_id']}" in reason  # where to look
+    assert "has been paid" not in outcome.view["customer_message"]

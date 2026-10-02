@@ -195,7 +195,7 @@ async def test_submission_is_accepted_at_once_and_progress_is_readable():
         assert during["customer_message"] == "We're checking the records for this transfer."
 
         done = await supervisor.finished(body["dispute_id"])
-        assert (done["status"], done["execution_status"]) == ("refund_approved", "finished")
+        assert (done["status"], done["execution_status"]) == ("refund_paid", "finished")
         assert done["result"]["approval"]["route"] == "auto_approved"
 
 
@@ -207,7 +207,7 @@ async def test_a_later_duplicate_is_pointed_to_the_same_dispute_without_running_
 
         assert again.status_code == 200 and again.headers["idempotent-replay"] == "true"
         assert again.json()["dispute_id"] == first["dispute_id"]
-        assert again.json()["status"] == "refund_approved"  # the dispute as it stands now
+        assert again.json()["status"] == "refund_paid"  # the dispute as it stands now
         assert len(supervisor.model.seen) == len(HAPPY)
 
 

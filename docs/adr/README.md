@@ -24,6 +24,7 @@ To change a decision, add a new ADR that supersedes the old one, and mark the ol
 | [0017](0017-token-exchange-for-delegated-work.md) | The supervisor issues its own short-lived token to act for a customer | Accepted | M6 |
 | [0018](0018-dispute-queue-and-worker.md) | Disputes wait in a queue; a separate worker runs them, with at most two deliveries | Accepted | M6 |
 | [0019](0019-shared-ledger-in-postgresql.md) | The ledger is one shared PostgreSQL store, and the database enforces "pay once" | Accepted | M6 |
+| [0020](0020-paying-approved-refunds.md) | The worker pays approved refunds from the saved decision; definite refusals go to a person | Accepted | M6 |
 
 ## Template
 

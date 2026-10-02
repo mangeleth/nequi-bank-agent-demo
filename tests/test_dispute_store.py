@@ -145,3 +145,25 @@ async def test_a_rejected_change_writes_no_event(store):
 
 async def test_ping(store):
     assert await store.ping() is True
+
+
+async def test_settle_moves_a_finished_approved_dispute_on_exactly_once(store):
+    """refund_approved -> refund_paid, recorded once even if two workers try (ADR-0020)."""
+    record, _ = await new_dispute(store)
+    paid = result(record.dispute_id, DisputeStatus.REFUND_PAID).model_copy(
+        update={"customer_message": "A refund of 50000.00 COP has been paid back to your account."})
+
+    assert not await store.settle(record.dispute_id, expected=DisputeStatus.REFUND_APPROVED, result=paid,
+                                  note="too early")  # not finished yet
+    await store.start(record.dispute_id, "checking")
+    await store.finish(record.dispute_id, result(record.dispute_id))
+
+    assert await store.settle(record.dispute_id, expected=DisputeStatus.REFUND_APPROVED, result=paid,
+                              note="refund paid: RF-1")
+    assert not await store.settle(record.dispute_id, expected=DisputeStatus.REFUND_APPROVED, result=paid,
+                                  note="refund paid: RF-1")  # a second worker: no longer approved
+
+    stored = await store.get(record.dispute_id, "user-1001")
+    assert (stored.execution_status, stored.business_status) == (ExecutionStatus.FINISHED, DisputeStatus.REFUND_PAID)
+    assert stored.customer_message.endswith("paid back to your account.")
+    assert [event["note"] for event in await store.events(record.dispute_id)][-1] == "refund paid: RF-1"

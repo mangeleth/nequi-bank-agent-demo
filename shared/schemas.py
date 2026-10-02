@@ -63,7 +63,8 @@ class DisputeStatus(StrEnum):
     happened, so there is no "resolved": an approved refund is not a paid refund.
 
         RECEIVED -> INVESTIGATING -> CLOSED_NO_REFUND
-                                  -> REFUND_APPROVED -> REFUND_PAID   (payment: Milestone 6, Step 11)
+                                  -> REFUND_APPROVED -> REFUND_PAID   (the ledger confirmed it)
+                                                     -> PENDING_HUMAN_APPROVAL (the ledger refused it)
                                   -> PENDING_HUMAN_APPROVAL -> REFUND_APPROVED | REJECTED
     """
 
@@ -220,6 +221,17 @@ class RefundApproval(Contract):
         return DisputeStatus.PENDING_HUMAN_APPROVAL
 
 
+class RefundPayment(Contract):
+    """The ledger's confirmation that an approved refund was paid. Copied from the ledger's
+    answer; the refund exists in the ledger under `refund_id`."""
+
+    refund_id: str
+    amount: Money
+    currency: Currency
+    executed_at: datetime
+    idempotency_key: str
+
+
 # --- End-to-end result ------------------------------------------------------------------------
 
 
@@ -231,6 +243,7 @@ class TriageResult(Contract):
     status: DisputeStatus
     verdict: DisputeVerdict | None = None  # the LLM's recommendation, if one was reached
     approval: RefundApproval | None = None  # the deterministic policy decision, for refunds
+    payment: RefundPayment | None = None  # set once the ledger confirms the refund was paid
     fraud: FraudAssessment | None = None
     ledger: LedgerReconciliation | None = None
     customer_message: str  # chosen by code from established facts; never model-written text

@@ -15,12 +15,21 @@ from pydantic import BaseModel, ValidationError
 
 from shared.auth import CallerIdentity
 from shared.refund_policy import CustomerRefundHistory
-from shared.schemas import DisputeRequest, FraudAssessment, LedgerReconciliation
+from shared.schemas import DisputeRequest, FraudAssessment, LedgerReconciliation, RefundPayment
 from shared.tracing import TRACEPARENT_HEADER
 
 
 class SpecialistUnavailable(Exception):
     """An agent or Core Systems did not give a usable answer."""
+
+
+class RefundRefused(Exception):
+    """The ledger gave a definite no (e.g. amount_mismatch). Retrying would get the same answer,
+    so this goes to a person, never back to the queue."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
 
 
 def _parse(contract: type[BaseModel], response: httpx.Response):
@@ -44,6 +53,12 @@ class Specialists(Protocol):
     ) -> LedgerReconciliation: ...
 
     async def refund_history(self, caller: CallerIdentity, window_days: int) -> CustomerRefundHistory: ...
+
+    async def pay_refund(
+        self, user_id: str, transaction_id: str, amount: Decimal, idempotency_key: str
+    ) -> RefundPayment:
+        """Ask the ledger to pay. RefundRefused on a definite no; SpecialistUnavailable when the
+        answer is unknown (safe to retry: the same key never pays twice)."""
 
     async def ready(self) -> bool: ...
 
@@ -108,6 +123,27 @@ class HttpSpecialists:
             )
         except (ValueError, KeyError, TypeError, ArithmeticError) as exc:
             raise SpecialistUnavailable("malformed refund history from core systems") from exc
+
+    async def pay_refund(
+        self, user_id: str, transaction_id: str, amount: Decimal, idempotency_key: str
+    ) -> RefundPayment:
+        try:
+            response = await self._http.post(
+                f"{self._core_url}/v1/core-banking/refunds",
+                json={"transaction_id": transaction_id, "amount": str(amount)},
+                headers={"X-Customer-Id": user_id, "Idempotency-Key": idempotency_key},
+            )
+        except httpx.HTTPError as exc:
+            # We do not know whether it was paid. Retrying with the same key is safe.
+            raise SpecialistUnavailable(f"{type(exc).__name__} calling the ledger") from exc
+        if response.status_code in (200, 201):  # 200 = a replay of a refund already paid
+            return _parse(RefundPayment, response)
+        if response.status_code in (404, 409, 422):
+            detail = response.json().get("detail") if response.headers.get("content-type", "").startswith("application/json") else None
+            if isinstance(detail, dict):
+                raise RefundRefused(str(detail.get("code", "refused")), str(detail.get("message", "")))
+            raise RefundRefused(f"http_{response.status_code}", str(detail or response.text)[:200])
+        raise SpecialistUnavailable(f"HTTP {response.status_code} from the ledger")
 
     async def ready(self) -> bool:
         """True when both agents report ready (each of them checks Core Systems)."""

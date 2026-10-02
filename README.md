@@ -23,7 +23,9 @@ flowchart TD
     lr["<b>LedgerReconciliation</b><br/>settlement_status = failed<br/>debited / credited"]
     verdict["🤖 Supervisor writes <b>DisputeVerdict</b><br/>decision = refund_recommended<br/>refund_amount<br/><i>recommendation only</i>"]
     policy["⚙️ <b>refund_policy.evaluate()</b> - no LLM<br/>kill switch on<br/>same transaction everywhere<br/>ledger status = failed<br/>amount == ledger discrepancy<br/>fraud risk = low<br/>amount ≤ 100.000 COP<br/>≤ 3 auto refunds in 30 days<br/>≤ 200.000 COP total in 30 days"]
-    auto["✅ AUTO_APPROVED<br/>status: refund_approved<br/>the <b>ledger</b> amount is approved<br/>(not paid yet)"]
+    auto["✅ AUTO_APPROVED<br/>status: refund_approved<br/>the <b>ledger</b> amount is approved"]
+    pay["⚙️ Worker asks the ledger to pay<br/>Idempotency-Key: dispute:&lt;id&gt;<br/>no LLM"]
+    paid["💸 REFUND_PAID<br/>the ledger confirmed it"]
     human["👤 HUMAN_REQUIRED<br/>status: pending_human_approval<br/>marked for review by a person"]
 
     customer --> supervisor
@@ -38,6 +40,9 @@ flowchart TD
     verdict --> policy
     policy -- "all checks pass" --> auto
     policy -- "any check fails" --> human
+    auto --> pay
+    pay -- "paid" --> paid
+    pay -- "refused, or no answer<br/>after a retry" --> human
 
     classDef llm fill:#fff4e5,stroke:#e69500,color:#222
     classDef det fill:#e8f4ff,stroke:#2b7bd6,color:#222
@@ -45,9 +50,9 @@ flowchart TD
     classDef ok fill:#e7f7ec,stroke:#2e9b4f,color:#222
     classDef review fill:#fdecec,stroke:#d0453f,color:#222
     class supervisor,fraud,ledger,verdict llm
-    class core,policy det
+    class core,policy,pay det
     class customer,fa,lr data
-    class auto ok
+    class auto,paid ok
     class human review
 ```
 
@@ -89,10 +94,22 @@ the refund and the transaction's new status written together or not at all
 ([ADR-0019](docs/adr/0019-shared-ledger-in-postgresql.md)). Redis is not used for this: ours
 keeps nothing across a restart, which is acceptable for a duplicate check and not for money.
 
-Status: deployed. On the cluster both Core Systems pods share one ledger: a refund paid by one
-pod and retried on the other returns the same refund. The worker does not call the endpoint yet,
-so an approved refund is still reported as `refund_approved`, not paid. That is the rest of
-Milestone 6, Step 11.
+On the cluster both Core Systems pods share one ledger: a refund paid by one pod and retried on
+the other returns the same refund.
+
+### How the worker pays ([ADR-0020](docs/adr/0020-paying-approved-refunds.md))
+
+The decision is saved first; payment is a separate step that works from the saved approval.
+
+| The ledger answers | The dispute becomes | Why |
+|---|---|---|
+| Paid (`201`), or already paid (`200` replay) | `refund_paid` | Said only after the ledger confirms |
+| A definite no, e.g. `amount_mismatch` (`422`) | `pending_human_approval` | Retrying would get the same answer; a person, not a model, decides which amount is right |
+| No answer (timeout, `5xx`) | retried, then `pending_human_approval` | Unknown whether it paid; the same key makes the retry safe |
+
+If the queue redelivers a dispute whose decision was already saved, the worker only pays: the
+model is not asked again, so a second run cannot reach a different decision about money that may
+already have moved.
 
 ## Architecture
 

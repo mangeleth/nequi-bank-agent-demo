@@ -3,9 +3,9 @@
 Rule: say only what has been established (docs/LEARNINGS.md, Part 2, entry D).
   - Facts come from the ledger figures (verified against the system of record) and from the
     deterministic refund policy. Nothing here is copied from text a model wrote.
-  - Verbs match what has actually happened. Today a refund can be "recommended" or "approved";
-    this system does not pay yet, so it never says "paid" or "sent". A case that needs a person
-    is "marked for review": there is no review queue yet to have "sent" it to (Milestone 6).
+  - Verbs match what has actually happened. A refund is "recommended", "approved", or "paid",
+    and "paid" only once the ledger has confirmed it. A case that needs a person is "marked for
+    review": there is no review queue yet to have "sent" it to.
   - If we do not know something, the message leaves it out rather than guessing.
 """
 
@@ -15,10 +15,13 @@ from shared.schemas import (
     DisputeVerdict,
     LedgerReconciliation,
     RefundApproval,
+    RefundPayment,
     SettlementStatus,
 )
 
 NEEDS_PERSON = "We couldn't complete the review automatically, so the case is marked for review by a person."
+PAYMENT_NEEDS_PERSON = ("A refund was approved, but it could not be paid automatically, so the case is marked "
+                        "for review by a person.")
 
 # Before there is a result. Each is true only while the dispute is in that status.
 RECEIVED = "We've received your dispute."
@@ -69,3 +72,13 @@ def customer_message(
 ) -> str:
     action = _action(ledger, verdict, approval, escalated)
     return f"{_records(ledger)} {action}" if ledger is not None else action
+
+
+def paid_message(ledger: LedgerReconciliation | None, payment: RefundPayment) -> str:
+    """Only after the ledger confirmed the payment. The amount is the ledger's, not ours."""
+    action = f"A refund of {payment.amount} {payment.currency} has been paid back to your account."
+    return f"{_records(ledger)} {action}" if ledger is not None else action
+
+
+def payment_needs_person_message(ledger: LedgerReconciliation | None) -> str:
+    return f"{_records(ledger)} {PAYMENT_NEEDS_PERSON}" if ledger is not None else PAYMENT_NEEDS_PERSON
