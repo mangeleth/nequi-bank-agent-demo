@@ -23,6 +23,12 @@ data:
   LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL}
   LANGFUSE_PUBLIC_KEY_FILE: /mnt/secrets/langfuse-public-key
   LANGFUSE_SECRET_KEY_FILE: /mnt/secrets/langfuse-secret-key
+  # Dispute store (ADR-0016): the password is a file mounted from Key Vault, never a value here
+  DISPUTE_STORE: postgres
+  PGHOST: postgres
+  PGDATABASE: disputes
+  PGUSER: disputes
+  POSTGRES_PASSWORD_FILE: /mnt/secrets/postgres-password
   # Deduplication gate (ADR-0015): one dispute per customer and transaction
   DEDUP_BACKEND: redis
   REDIS_URL: redis://redis:6379/0

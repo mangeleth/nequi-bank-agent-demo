@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: test-db venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster redis-image dedup-reset test guard-clean build push deploy smoke release
+.PHONY: test-db venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster redis-image postgres-image postgres-password demo-reset test guard-clean build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -157,13 +157,17 @@ aoai-check:
 ## Give a service's pods their own Azure identity (Workload Identity, ADR-0001): a managed
 ## identity, permission to call Azure OpenAI, and trust in the service's Kubernetes ServiceAccount.
 ## Safe to run twice. Usage: make wi-create SERVICE=fraud-agent
+## A service that never calls a model gets no model access: make wi-create SERVICE=postgres WI_OPENAI=false
+WI_OPENAI ?= true
 wi-create:
 	az identity create -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) -l $(AZURE_LOCATION) -o none
-	az role assignment create -o none \
-		--assignee-object-id $$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) --query principalId -o tsv) \
-		--assignee-principal-type ServicePrincipal \
-		--role "Cognitive Services OpenAI User" \
-		--scope $$(az cognitiveservices account show -g $(AKS_RESOURCE_GROUP) -n $(AOAI_NAME) --query id -o tsv)
+	@if [ "$(WI_OPENAI)" = "true" ]; then \
+		az role assignment create -o none \
+			--assignee-object-id $$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) --query principalId -o tsv) \
+			--assignee-principal-type ServicePrincipal \
+			--role "Cognitive Services OpenAI User" \
+			--scope $$(az cognitiveservices account show -g $(AKS_RESOURCE_GROUP) -n $(AOAI_NAME) --query id -o tsv); \
+	else echo "id-$(SERVICE): no Azure OpenAI access (WI_OPENAI=false)"; fi
 	az identity federated-credential create -o none \
 		--name aks-$(K8S_NAMESPACE)-$(SERVICE) --identity-name id-$(SERVICE) -g $(AKS_RESOURCE_GROUP) \
 		--issuer $$(az aks show -g $(AKS_RESOURCE_GROUP) -n $(AKS_CLUSTER_NAME) --query oidcIssuerProfile.issuerUrl -o tsv) \
@@ -186,9 +190,25 @@ kv-grant:
 redis-image:
 	az acr import --name $(ACR_NAME) --source docker.io/library/redis:7.4-alpine --image redis:7.4-alpine --force -o none
 
-## Forget every dispute claim and stored result (demo and evaluation only)
-dedup-reset:
+## Copy the PostgreSQL image into our registry. Safe to run twice.
+postgres-image:
+	az acr import --name $(ACR_NAME) --source docker.io/library/postgres:17-alpine --image postgres:17-alpine --force -o none
+
+## Generate the database password straight into Key Vault. It is never printed or written to
+## disk. Skips if the secret exists (PostgreSQL only reads it when the database is first created).
+postgres-password:
+	@if az keyvault secret show --vault-name $(KEYVAULT_NAME) -n postgres-password -o none 2>/dev/null; then \
+		echo "postgres-password already exists in $(KEYVAULT_NAME) - not changed."; \
+	else \
+		az keyvault secret set --vault-name $(KEYVAULT_NAME) -n postgres-password \
+			--value "$$(openssl rand -base64 36 | tr -d '/+=\n')" -o none \
+		&& echo "postgres-password created in $(KEYVAULT_NAME)."; \
+	fi
+
+## Forget every dispute: gate keys in Redis and records in PostgreSQL (demo and evaluation only)
+demo-reset:
 	kubectl exec -n $(K8S_NAMESPACE) deploy/redis -- redis-cli FLUSHDB
+	kubectl exec -n $(K8S_NAMESPACE) postgres-0 -- psql -q -U disputes -d disputes -c "TRUNCATE disputes CASCADE"
 
 ## Publish the demo identity provider's PUBLIC key to the cluster (it verifies tokens; not a secret)
 jwt-publish:
@@ -237,7 +257,7 @@ eval:
 ## Evaluate the system deployed on AKS, through a temporary port-forward to the supervisor
 eval-cluster:
 	@mkdir -p .local
-	@$(MAKE) --no-print-directory dedup-reset
+	@$(MAKE) --no-print-directory demo-reset
 	@kubectl port-forward -n $(K8S_NAMESPACE) svc/supervisor 18004:80 >/dev/null 2>&1 & echo $$! > .local/port-forward.pid
 	@sleep 4
 	@$(MAKE) --no-print-directory eval SUPERVISOR_URL=http://127.0.0.1:18004 EVAL_LABEL=aks; status=$$?; \
@@ -247,6 +267,7 @@ eval-cluster:
 # Delivery (ADR-0004): make release SERVICE=core-systems
 # ---------------------------------------------------------------------------------------------
 SERVICE ?= core-systems
+WORKLOAD ?= deployment# statefulset for postgres
 SERVICE_DIR = services/$(subst -,_,$(SERVICE))
 IMAGE_TAG := $(shell git rev-parse --short HEAD)
 IMAGE = $(ACR_NAME).azurecr.io/$(SERVICE):$(IMAGE_TAG)
@@ -272,7 +293,7 @@ deploy:
 		  AZURE_TENANT_ID=$$(az account show --query tenantId -o tsv) \
 		  envsubst '$$IMAGE $$ACR_NAME $$WI_CLIENT_ID $$AZURE_TENANT_ID $$KEYVAULT_NAME $$AOAI_NAME $$AOAI_DEPLOYMENT $$AOAI_API_VERSION $$JWT_ISSUER $$JWT_AUDIENCE $$LANGFUSE_BASE_URL' \
 		| kubectl apply -f -
-	kubectl rollout status deployment/$(SERVICE) -n $(K8S_NAMESPACE) --timeout=180s
+	kubectl rollout status $(WORKLOAD)/$(SERVICE) -n $(K8S_NAMESPACE) --timeout=240s
 
 ## Call the service from inside the cluster via its ClusterIP DNS name
 smoke:
