@@ -1,9 +1,11 @@
 # Live demo script
 
-The scenarios to show live, in order, with what to point at and what to say. The Milestone 7 UI
-is built to make each of these visible; until then they run from the terminal.
+The scenarios to show live, in order, with what to point at and what to say.
 
-Before starting: `make aks-start` (if stopped), then `make demo-reset`.
+Before starting: `make aks-start` (if stopped), `make demo-reset`, then `make ui` and open
+http://localhost:8501. Scenarios 1, 2, and 5 run in the **📱 Customer app** tab; scenario 3 runs
+the batch from the terminal, then the dispute in the UI; scenario 4 runs from the terminal. The
+**📊 Evaluation dashboard** tab answers "how do you know it works, and what does it cost?".
 
 ---
 
@@ -31,7 +33,10 @@ exactly once."
 - the customer message starting *"This transfer was affected by a confirmed problem on our side"*
 
 **Then, side by side:** dispute `TX-20261001000011` (the same failure, at 10:30, after the
-window). It goes through the agents, because the incident does not cover it.
+window). It goes through the agents, because the incident does not cover it. In the UI: dispute
+A = user-1002, "35.000 to Banco Andino at 09:10"; switch on dispute B = user-1002, "20.000 to
+Banco Andino at 10:30"; one Submit. Measured on AKS: A paid with the ⚡ badge and no trace, B
+investigated by the agents with a trace link.
 
 **Say:** "When the bank already knows what happened, there is nothing to investigate. A person
 confirmed the incident once; code applies it, and the same refund policy still decides. Agents
@@ -77,3 +82,12 @@ Pick what time allows:
 
 **Show:** the identity comes from the verified token, never from text; the prompt-injection
 scenario in the evaluation passes.
+
+## 6. How do you know it works, and what does it cost?
+
+**Show:** the **📊 Evaluation dashboard**: evaluated, successful, success rate, total cost, and
+cost per success, run by run.
+
+**Say:** point at the two runs where the payment bug made 7 of 10 succeed: total cost hardly
+moved ($0.1306 → $0.1295), but cost per success rose from $0.0131 to $0.0185. "Total cost alone
+would have hidden it; success rate and cost per success side by side do not."

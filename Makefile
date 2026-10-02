@@ -451,8 +451,9 @@ deploy:
 	kubectl rollout status $(WORKLOAD)/$(SERVICE) -n $(K8S_NAMESPACE) --timeout=240s
 
 ## Call the service from inside the cluster via its ClusterIP DNS name
+SMOKE_PATH = $(if $(filter demo-ui,$(SERVICE)),/_stcore/health,/healthz)
 smoke:
-	scripts/smoke.sh $(K8S_NAMESPACE) http://$(SERVICE)/healthz
+	scripts/smoke.sh $(K8S_NAMESPACE) http://$(SERVICE)$(SMOKE_PATH)
 
 ## End-to-end check of the deployed Fraud Agent: log in as a synthetic customer and dispute
 ## their failed transfer, from inside the cluster

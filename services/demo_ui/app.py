@@ -61,7 +61,7 @@ def show_outcome(view: dict, progress_lines: list[str]) -> None:
                     f"(idempotency key `{p['idempotency_key']}`)")
     if outcome.checks:
         with st.expander("Refund policy checks (code, not a model)", expanded=outcome.path == "incident"):
-            st.dataframe(pd.DataFrame(outcome.checks), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(outcome.checks), hide_index=True, width="stretch")
     with st.expander("Steps taken"):
         st.code("\n".join(outcome.steps) or "(none)", language=None)
     if outcome.trace_url:
@@ -160,9 +160,9 @@ def dashboard_tab() -> None:
     chart_left, chart_right = st.columns(2)
     chart_left.line_chart(history.set_index("run")["success_rate"], y_label="success rate")
     chart_right.line_chart(history.set_index("run")["cost_per_success_usd"], y_label="cost per success ($)")
-    st.dataframe(history, hide_index=True, use_container_width=True)
+    st.dataframe(history, hide_index=True, width="stretch")
     st.markdown("**Latest run, scenario by scenario**")
-    st.dataframe(pd.DataFrame(logic.latest_scenarios(RESULTS_DIR)), hide_index=True, use_container_width=True)
+    st.dataframe(pd.DataFrame(logic.latest_scenarios(RESULTS_DIR)), hide_index=True, width="stretch")
 
 
 # --- 3. The demo script ---------------------------------------------------------------------------
