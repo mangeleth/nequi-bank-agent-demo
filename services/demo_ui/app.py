@@ -46,8 +46,12 @@ def show_trace(dispute_id: str, trace_url: str, steps: list[str]) -> None:
         st.link_button("Open the Langfuse trace", trace_url)
         return
     key = f"trace-{dispute_id}"
-    if st.button("🔍 Show the trace" if key not in st.session_state else "↻ Read the trace again", key=f"btn-{key}"):
+
+    def read() -> None:  # a callback runs before the page is redrawn, so the label below is current
         st.session_state[key] = reader.observations(logic.trace_id_from_url(trace_url))
+
+    st.button("🔍 Show the trace" if key not in st.session_state else "↻ Read the trace again",
+              key=f"btn-{key}", on_click=read)
     observations = st.session_state.get(key)
     if observations is None:
         st.caption("Every step of the run, read from Langfuse: who decided what, which tools were called, "
