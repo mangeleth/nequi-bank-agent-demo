@@ -11,7 +11,7 @@
     },
     "expected": {
       "http_status": 202,
-      "status": "refund_approved",
+      "status": "refund_paid",
       "decision": "refund_recommended",
       "policy_route": "auto_approved",
       "required_tool_calls": [
@@ -44,7 +44,7 @@
     },
     "expected": {
       "http_status": 200,
-      "status": "refund_approved",
+      "status": "refund_paid",
       "decision": "refund_recommended",
       "policy_route": "auto_approved",
       "required_tool_calls": [],
@@ -244,7 +244,7 @@
     },
     "expected": {
       "http_status": 202,
-      "status": "refund_approved",
+      "status": "refund_paid",
       "decision": "refund_recommended",
       "policy_route": "auto_approved",
       "required_tool_calls": [

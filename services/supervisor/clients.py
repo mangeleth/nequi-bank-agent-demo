@@ -41,6 +41,21 @@ def _parse(contract: type[BaseModel], response: httpx.Response):
         raise SpecialistUnavailable(f"malformed {contract.__name__} from {response.request.url.host}") from exc
 
 
+def _paid(response: httpx.Response, transaction_id: str, amount: Decimal, idempotency_key: str) -> RefundPayment:
+    """Read the ledger's confirmation. Its reply describes the whole refund (customer, transaction,
+    ...); we keep what we record, and check it is the refund we asked for. A confirmation for a
+    different transaction, amount, or key is not trusted as "paid"."""
+    try:
+        body = response.json()
+        payment = RefundPayment.model_validate({field: body[field] for field in RefundPayment.model_fields})
+        confirmed = (body["transaction_id"], Decimal(str(body["amount"])), body["idempotency_key"])
+    except (ValueError, KeyError, TypeError, ArithmeticError, ValidationError) as exc:
+        raise SpecialistUnavailable("malformed refund confirmation from the ledger") from exc
+    if confirmed != (transaction_id, amount, idempotency_key):
+        raise SpecialistUnavailable(f"the ledger confirmed a different refund: {confirmed}")
+    return payment
+
+
 class Specialists(Protocol):
     async def owns_transaction(self, caller: CallerIdentity, transaction_id: str) -> bool: ...
 
@@ -137,7 +152,7 @@ class HttpSpecialists:
             # We do not know whether it was paid. Retrying with the same key is safe.
             raise SpecialistUnavailable(f"{type(exc).__name__} calling the ledger") from exc
         if response.status_code in (200, 201):  # 200 = a replay of a refund already paid
-            return _parse(RefundPayment, response)
+            return _paid(response, transaction_id, amount, idempotency_key)
         if response.status_code in (404, 409, 422):
             detail = response.json().get("detail") if response.headers.get("content-type", "").startswith("application/json") else None
             if isinstance(detail, dict):

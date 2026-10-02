@@ -75,12 +75,17 @@ RESULT_TIMEOUT_SECONDS = 120
 
 
 def wait_for_result(supervisor: httpx.Client, dispute_id: str, headers: dict) -> dict:
-    """Poll the status endpoint, as the customer's app would, until the run is over."""
+    """Poll the status endpoint, as the customer's app would, until the dispute has settled.
+
+    A finished run that is still `refund_approved` is not settled: the decision is saved and the
+    payment is in progress (ADR-0020). It ends as refund_paid, or with a person.
+    """
     deadline = time.monotonic() + RESULT_TIMEOUT_SECONDS
     view = {}
     while time.monotonic() < deadline:
         view = supervisor.get(f"/v1/disputes/{dispute_id}", headers=headers).json()
-        if view.get("execution_status") in ("finished", "failed"):
+        if view.get("execution_status") == "failed" or (
+                view.get("execution_status") == "finished" and view.get("status") != "refund_approved"):
             break
         time.sleep(POLL_SECONDS)
     return view
