@@ -380,6 +380,10 @@ def dashboard_tab() -> None:
         return
     last = runs[-1]
     st.markdown(f"Última evaluación: **{last['run']}**, commit `{last['commit']}`, entorno `{last['target']}`")
+    st.info("**Cómo se actualiza:** esta evaluación se ejecuta **manualmente** (`make eval-cluster`): 12 escenarios "
+            "fijos contra el sistema desplegado, como si fueran 12 clientes reales, calificados desde las trazas. "
+            "El tablero se actualiza **cada vez que se despliega la app**. Las disputas que envíes en la demo no "
+            "cambian estas cifras. (Pendiente: ejecutarla cada semana y mostrarla en vivo, issue #22.)", icon="ℹ️")
     cols = st.columns(5)
     cols[0].metric("Solicitudes evaluadas", last["evaluated"])
     cols[1].metric("Solicitudes exitosas", last["successful"])

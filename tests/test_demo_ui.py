@@ -373,3 +373,13 @@ def test_the_dashboard_explains_the_three_criteria(monkeypatch):
     text = " ".join(m.value for m in page.markdown)
     for name in ("Basada en los registros (groundedness)", "Completa (completeness)", "Clara (clarity)"):
         assert f"**{name}:**" in text
+
+
+def test_the_dashboard_says_how_the_evaluation_is_updated(monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setenv("EVAL_RESULTS_DIR", "evals/results")
+    page = AppTest.from_file(str(Path(__file__).resolve().parent.parent / "services/demo_ui/app.py"),
+                             default_timeout=30).run()
+    note = " ".join(i.value for i in page.info)
+    assert "manualmente" in note and "cada vez que se despliega la app" in note
