@@ -1,0 +1,18 @@
+---
+# ClusterIP only: no public address. Open it with `make ui` (a port-forward to your machine).
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-ui
+  namespace: disputes
+  labels:
+    app.kubernetes.io/name: demo-ui
+    app.kubernetes.io/part-of: dispute-triage
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: demo-ui
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: test-db test-servicebus venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster failure-tests failure-test-kill redis-image postgres-image postgres-password ledger-password ledger-db incident-refunds signing-key signing-grant signing-key-publish servicebus-create sb-grant demo-reset test guard-clean validate build push deploy smoke release
+.PHONY: test-db test-servicebus venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster failure-tests failure-test-kill redis-image postgres-image postgres-password ledger-password ledger-db incident-refunds demo-idp-publish ui run-ui signing-key signing-grant signing-key-publish servicebus-create sb-grant demo-reset test guard-clean validate build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -304,6 +304,23 @@ incident-refunds:
 	kubectl exec -n $(K8S_NAMESPACE) deploy/core-systems -- python -m services.core_systems.incident_refunds \
 		$(INCIDENT) --max-total $(MAX_TOTAL) $(if $(filter true,$(EXECUTE)),--execute,)
 
+## Give the demo UI the demo identity provider's private key (ADR-0023), from .local/ to Key
+## Vault, without printing it. The public half is already published by `make jwt-publish`.
+demo-idp-publish:
+	@test -f .local/jwt-private.pem || { echo "no .local/jwt-private.pem: run make demo-token first"; exit 1; }
+	@az keyvault secret set --vault-name $(KEYVAULT_NAME) -n demo-idp-private-key --file .local/jwt-private.pem \
+		-o none && echo "demo-idp-private-key stored in $(KEYVAULT_NAME)."
+
+## Open the demo UI deployed on AKS at http://localhost:8501 (a port-forward; Ctrl+C to stop)
+ui:
+	@echo "Demo UI: http://localhost:8501"
+	kubectl port-forward -n $(K8S_NAMESPACE) svc/demo-ui 8501:80
+
+## Run the demo UI locally against the supervisor on :8004 (make run-supervisor)
+run-ui:
+	SUPERVISOR_URL=http://127.0.0.1:8004 .venv/bin/python -m streamlit run services/demo_ui/app.py \
+		--server.headless=true --browser.gatherUsageStats=false
+
 ## Forget every dispute: gate keys in Redis and records in PostgreSQL (demo and evaluation only)
 demo-reset:
 	kubectl exec -n $(K8S_NAMESPACE) deploy/redis -- redis-cli FLUSHDB
@@ -434,8 +451,9 @@ deploy:
 	kubectl rollout status $(WORKLOAD)/$(SERVICE) -n $(K8S_NAMESPACE) --timeout=240s
 
 ## Call the service from inside the cluster via its ClusterIP DNS name
+SMOKE_PATH = $(if $(filter demo-ui,$(SERVICE)),/_stcore/health,/healthz)
 smoke:
-	scripts/smoke.sh $(K8S_NAMESPACE) http://$(SERVICE)/healthz
+	scripts/smoke.sh $(K8S_NAMESPACE) http://$(SERVICE)$(SMOKE_PATH)
 
 ## End-to-end check of the deployed Fraud Agent: log in as a synthetic customer and dispute
 ## their failed transfer, from inside the cluster

@@ -93,7 +93,7 @@ Planned steps:
   and evaluation scenarios that prove it. Verified on the cluster.
 - Azure resources use Entra ID and Workload Identity, with no connection strings (ADR-0001).
 
-## Milestone 7: the demo UI
+## Milestone 7: the demo UI (done, ADR-0023)
 
 - A Streamlit app simulating the Nequi app: submit a dispute, watch the investigation, read the
   outcome and the customer message, and open the Langfuse trace.

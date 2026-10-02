@@ -7,6 +7,8 @@
 **/*.pyc
 .pytest_cache
 docs
+# ...except the demo script, which the demo UI shows (ADR-0023)
+!docs/DEMO_SCRIPT.md
 tests
 k8s
 scripts

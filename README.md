@@ -425,7 +425,22 @@ the system deployed on AKS and scores each run from its Langfuse trace
 The scenarios include a prompt injection, an attempt to dispute another customer's
 transaction, and a duplicate submission that must be answered from the gate at no model cost. Reports are kept in [`evals/results/`](evals/results/).
 
-The scenarios to show live, in order, are in [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md).
+## Demo UI
+
+A Streamlit app ([ADR-0023](docs/adr/0023-demo-ui.md)), deployed to AKS with no public address:
+`make ui`, then open http://localhost:8501.
+
+- **📱 Customer app:** submit one dispute, or two side by side, as a synthetic customer, and watch
+  the stored status change live. A dispute decided by a confirmed incident shows *"⚡ Decided
+  without a model: 0 model calls, $0"*; an agent investigation links to its Langfuse trace. Both
+  show the refund policy's checks and the ledger's refund ID.
+- **📊 Evaluation dashboard:** evaluated requests, successful requests, success rate, total cost,
+  and cost per success, per evaluation run over time.
+- **🗺️ Demo script:** the scenarios to show live, in order ([docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md)).
+
+The UI uses the system only as a customer's app would: the intake API, with a login token. It
+cannot reach the queues, the database, the model, or Core Systems.
+
 
 ## Run it locally
 
