@@ -108,15 +108,20 @@ Planned steps:
   confirmed it, a model-call count of 0 and a cost of $0, and the policy checks it still passed.
   Shown side by side with an uncovered dispute that goes through the agents.
 - The UI follows the live demo script, scenario by scenario.
-- **An evaluation dashboard with two numbers side by side**, because neither is enough alone:
-  - **success rate** = successful requests ÷ evaluated requests: is it right?
-  - **cost per success** = total cost ÷ successful requests (retries included): what does each
-    right answer cost?
+- **An evaluation dashboard** showing how the two key numbers are built, so anyone can check them:
 
-  A cheap system that often fails can still show a good cost per success, and a correct one can
-  be too expensive; together they cannot hide each other. Both come from the evaluation runs
-  (`evals/results/*.json`), shown per run over time, with time to accept and time to result next
-  to them, and the fast-path disputes counted separately (0 model calls, $0).
+  | Number | How it is calculated | Latest run |
+  |---|---|---|
+  | Evaluated requests | disputes in the run | 12 |
+  | Successful requests | disputes with the expected outcome | 12 |
+  | **Success rate** | successful ÷ evaluated: *is it right?* | 100% |
+  | Total cost | every model call in the run, retries and wrong answers included | $0.1486 |
+  | **Cost per success** | total cost ÷ successful: *what does each right answer cost?* | $0.0124 |
+
+  Success rate and cost per success are shown side by side, because neither is enough alone: a
+  cheap system that often fails can look fine on cost, and an always-right one can be too
+  expensive to run. Shown per run over time (`evals/results/*.json`), with time to accept and
+  time to result next to them, and the fast-path disputes counted separately (0 model calls, $0).
 
 ## Milestone 8: the three-tier defensive barrier
 
