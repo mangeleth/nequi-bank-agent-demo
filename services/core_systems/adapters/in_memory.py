@@ -11,16 +11,24 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from services.core_systems.adapters.fixtures import AUTO_REFUNDS, RISK_SIGNALS, TRANSACTIONS
-from services.core_systems.models import Refund, RefundHistory, RiskSignals, Transaction
+from services.core_systems.adapters.fixtures import AUTO_REFUNDS, INCIDENTS, RISK_SIGNALS, TRANSACTIONS
+from services.core_systems.models import Incident, Refund, RefundHistory, RiskSignals, Transaction
 from services.core_systems.ports import IdempotencyConflict, RefundRejected
 from shared.schemas import SettlementStatus
+
+
+def covers(incident: dict, tx: dict) -> bool:
+    """The incident rule (ADR-0022): same failure code, same recipient bank, inside the window.
+    The PostgreSQL adapter applies the same rule in SQL; tests run both."""
+    return (tx["failure_code"] == incident["failure_code"] and tx["recipient_bank"] == incident["recipient_bank"]
+            and incident["window_start"] <= tx["created_at"] < incident["window_end"])
 
 
 class InMemoryLedger:
     def __init__(self) -> None:
         now = datetime.now(UTC)
         self._transactions = copy.deepcopy(TRANSACTIONS)
+        self._incidents = copy.deepcopy(INCIDENTS)
         # Past automatic refunds per customer, as (when, amount)
         self._refund_history = {customer: [(now - timedelta(days=days_ago), amount) for days_ago, amount in past]
                                 for customer, past in AUTO_REFUNDS.items()}
@@ -42,6 +50,22 @@ class InMemoryLedger:
             auto_refund_count=len(recent),
             auto_refund_total=sum(recent, Decimal("0.00")),
         )
+
+    async def incident_for(self, customer_id: str, transaction_id: str) -> Incident | None:
+        tx = self._transactions.get(transaction_id)
+        if tx is None or tx["customer_id"] != customer_id:
+            return None
+        for incident in self._incidents.values():
+            if covers(incident, tx):
+                return Incident(**incident)
+        return None
+
+    async def affected_transactions(self, incident_id: str) -> list[Transaction] | None:
+        incident = self._incidents.get(incident_id)
+        if incident is None:
+            return None
+        return [Transaction(**tx) for tx in sorted(self._transactions.values(), key=lambda t: t["transaction_id"])
+                if covers(incident, tx)]
 
     async def execute_refund(
         self, customer_id: str, transaction_id: str, amount: Decimal, idempotency_key: str

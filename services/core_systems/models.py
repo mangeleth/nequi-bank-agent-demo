@@ -8,6 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from shared.schemas import Amount, Currency, Money, Score, SettlementStatus, TransactionId
 
 CustomerId = Annotated[str, Field(pattern=r"^user-[0-9]{4,12}$")]
+BankCode = Annotated[str, Field(pattern=r"^[A-Z_]{3,32}$")]  # e.g. NEQUI, BANCO_ANDINO
+FailureCode = Annotated[str, Field(pattern=r"^[A-Z_]{3,48}$")]  # e.g. INTERBANK_TIMEOUT
+IncidentId = Annotated[str, Field(pattern=r"^INC-[0-9]{8}-[0-9]{2}$")]
 
 
 class Resource(BaseModel):
@@ -18,12 +21,14 @@ class Transaction(Resource):
     transaction_id: TransactionId
     customer_id: CustomerId
     recipient_account: str = Field(pattern=r"^\*{4}[0-9]{4}$")  # masked, e.g. ****4821
+    recipient_bank: BankCode
     amount: Amount
     currency: Currency
     created_at: datetime
     settlement_status: SettlementStatus
     debited_amount: Amount
     credited_amount: Amount
+    failure_code: FailureCode | None = None  # why it failed, from the payment network; None if it did not
 
 
 class RiskSignals(Resource):
@@ -60,3 +65,21 @@ class Refund(Resource):
     currency: Currency
     executed_at: datetime
     idempotency_key: str
+
+
+class Incident(Resource):
+    """A platform failure that operations has CONFIRMED (ADR-0022).
+
+    It covers every transaction that failed with `failure_code` towards `recipient_bank` inside
+    the window. Confirmation is by a person, once, for the whole incident: that is what lets a
+    matching dispute be decided without investigating it.
+    """
+
+    incident_id: IncidentId
+    title: str = Field(min_length=1, max_length=200)
+    failure_code: FailureCode
+    recipient_bank: BankCode
+    window_start: datetime
+    window_end: datetime  # exclusive
+    confirmed_by: str = Field(min_length=1, max_length=100)
+    confirmed_at: datetime

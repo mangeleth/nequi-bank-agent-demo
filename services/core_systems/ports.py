@@ -11,7 +11,7 @@ Methods are async because real adapters do network I/O.
 from decimal import Decimal
 from typing import Protocol
 
-from services.core_systems.models import Refund, RefundHistory, RiskSignals, Transaction
+from services.core_systems.models import Incident, Refund, RefundHistory, RiskSignals, Transaction
 
 
 class RefundRejected(Exception):
@@ -47,6 +47,17 @@ class LedgerRepository(Protocol):
 
     async def ping(self) -> bool:
         """True if the backing system is reachable (used by the readiness probe)."""
+
+
+class IncidentRegistry(Protocol):
+    """Incidents that operations has confirmed (ADR-0022). Matched against the ledger's own
+    transactions, so in our adapters the ledger implements it too."""
+
+    async def incident_for(self, customer_id: str, transaction_id: str) -> Incident | None:
+        """The confirmed incident covering this customer's transaction, or None."""
+
+    async def affected_transactions(self, incident_id: str) -> list[Transaction] | None:
+        """Every transaction the incident covers, for the batch refund job. None if no such incident."""
 
 
 class RiskRepository(Protocol):

@@ -19,8 +19,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
-from services.core_systems.adapters.fixtures import AUTO_REFUNDS, TRANSACTIONS
-from services.core_systems.models import Refund, RefundHistory, Transaction
+from services.core_systems.adapters.fixtures import AUTO_REFUNDS, INCIDENTS, TRANSACTIONS
+from services.core_systems.models import Incident, Refund, RefundHistory, Transaction
 from services.core_systems.ports import IdempotencyConflict, RefundRejected
 from shared.schemas import SettlementStatus
 
@@ -36,6 +36,20 @@ CREATE TABLE IF NOT EXISTS ledger_transactions (
     debited_amount     numeric(15,2) NOT NULL CHECK (debited_amount >= 0),
     credited_amount    numeric(15,2) NOT NULL CHECK (credited_amount >= 0)
 );
+-- Added in Step 12 (ADR-0022); ADD COLUMN IF NOT EXISTS upgrades a ledger created before it.
+ALTER TABLE ledger_transactions ADD COLUMN IF NOT EXISTS recipient_bank text NOT NULL DEFAULT 'NEQUI';
+ALTER TABLE ledger_transactions ADD COLUMN IF NOT EXISTS failure_code text;
+
+CREATE TABLE IF NOT EXISTS incidents (   -- confirmed by operations, once per incident
+    incident_id     text PRIMARY KEY,
+    title           text NOT NULL,
+    failure_code    text NOT NULL,
+    recipient_bank  text NOT NULL,
+    window_start    timestamptz NOT NULL,
+    window_end      timestamptz NOT NULL CHECK (window_end > window_start),
+    confirmed_by    text NOT NULL,
+    confirmed_at    timestamptz NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS ledger_refunds (
     refund_id        text PRIMARY KEY,
@@ -49,8 +63,13 @@ CREATE TABLE IF NOT EXISTS ledger_refunds (
 CREATE INDEX IF NOT EXISTS ledger_refunds_by_customer ON ledger_refunds (customer_id, executed_at);
 """
 
-_TX_COLUMNS = ("transaction_id, customer_id, recipient_account, amount, currency, created_at, settlement_status, "
-               "debited_amount, credited_amount")
+_TX_COLUMNS = ("transaction_id, customer_id, recipient_account, recipient_bank, amount, currency, created_at, "
+               "settlement_status, debited_amount, credited_amount, failure_code")
+_INCIDENT_COLUMNS = ("incident_id, title, failure_code, recipient_bank, window_start, window_end, confirmed_by, "
+                     "confirmed_at")
+# The incident rule (ADR-0022), the same as `covers()` in the in-memory adapter.
+_COVERS = ("t.failure_code = i.failure_code AND t.recipient_bank = i.recipient_bank "
+           "AND t.created_at >= i.window_start AND t.created_at < i.window_end")
 _REFUND_COLUMNS = "refund_id, transaction_id, customer_id, amount, currency, executed_at, idempotency_key"
 
 
@@ -63,30 +82,40 @@ class PostgresLedger:
         async with self._pool.connection() as conn, conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock(727002)")
             await conn.execute(SCHEMA)
-            if not (await (await conn.execute("SELECT count(*) AS n FROM ledger_transactions")).fetchone())["n"]:
-                await self._load_fixtures(conn)
+            await self._load_fixtures(conn)  # adds what is missing; never changes existing rows
 
     async def reset(self) -> None:
         """Demo only: put the ledger back to the synthetic starting data (`make demo-reset`)."""
         async with self._pool.connection() as conn, conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock(727002)")
             await conn.execute(SCHEMA)
-            await conn.execute("TRUNCATE ledger_refunds, ledger_transactions")
+            await conn.execute("TRUNCATE ledger_refunds, ledger_transactions, incidents")
             await self._load_fixtures(conn)
 
     @staticmethod
     async def _load_fixtures(conn) -> None:
+        """Insert the synthetic data that is missing. An existing transaction keeps its state (a
+        refunded one stays refunded); only the two columns added in Step 12 are backfilled."""
         now = datetime.now(UTC)
         for tx in TRANSACTIONS.values():
             await conn.execute(
-                f"INSERT INTO ledger_transactions ({_TX_COLUMNS}) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (tx["transaction_id"], tx["customer_id"], tx["recipient_account"], tx["amount"], tx["currency"],
-                 tx["created_at"], tx["settlement_status"].value, tx["debited_amount"], tx["credited_amount"]))
+                f"INSERT INTO ledger_transactions ({_TX_COLUMNS}) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (transaction_id) DO UPDATE SET recipient_bank = EXCLUDED.recipient_bank, "
+                "failure_code = EXCLUDED.failure_code "
+                "WHERE ledger_transactions.failure_code IS DISTINCT FROM EXCLUDED.failure_code",  # backfill only
+                (tx["transaction_id"], tx["customer_id"], tx["recipient_account"], tx["recipient_bank"], tx["amount"],
+                 tx["currency"], tx["created_at"], tx["settlement_status"].value, tx["debited_amount"],
+                 tx["credited_amount"], tx["failure_code"]))
+        for incident in INCIDENTS.values():
+            await conn.execute(
+                f"INSERT INTO incidents ({_INCIDENT_COLUMNS}) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (incident_id) DO NOTHING",
+                tuple(incident[column.strip()] for column in _INCIDENT_COLUMNS.split(",")))
         for customer, past in AUTO_REFUNDS.items():  # refunds from before this demo; no transaction attached
             for index, (days_ago, amount) in enumerate(past):
                 await conn.execute(
                     "INSERT INTO ledger_refunds (refund_id, idempotency_key, customer_id, amount, currency, executed_at) "
-                    "VALUES (%s, %s, %s, %s, 'COP', %s)",
+                    "VALUES (%s, %s, %s, %s, 'COP', %s) ON CONFLICT (refund_id) DO NOTHING",
                     (f"RF-seed-{customer}-{index}", f"seed:{customer}:{index}", customer, amount,
                      now - timedelta(days=days_ago)))
 
@@ -107,6 +136,26 @@ class PostgresLedger:
             row = await cursor.fetchone()
         return RefundHistory(customer_id=customer_id, window_days=window_days,
                              auto_refund_count=row["count"], auto_refund_total=Decimal(row["total"]).quantize(Decimal("0.01")))
+
+    async def incident_for(self, customer_id: str, transaction_id: str) -> Incident | None:
+        columns = ", ".join(f"i.{c.strip()}" for c in _INCIDENT_COLUMNS.split(","))
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                f"SELECT {columns} FROM ledger_transactions t JOIN incidents i ON {_COVERS} "
+                "WHERE t.transaction_id = %s AND t.customer_id = %s ORDER BY i.incident_id LIMIT 1",
+                (transaction_id, customer_id))
+            row = await cursor.fetchone()
+        return Incident(**row) if row else None
+
+    async def affected_transactions(self, incident_id: str) -> list[Transaction] | None:
+        columns = ", ".join(f"t.{c.strip()}" for c in _TX_COLUMNS.split(","))
+        async with self._pool.connection() as conn:
+            if await (await conn.execute("SELECT 1 FROM incidents WHERE incident_id = %s", (incident_id,))).fetchone() is None:
+                return None
+            cursor = await conn.execute(
+                f"SELECT {columns} FROM incidents i JOIN ledger_transactions t ON {_COVERS} "
+                "WHERE i.incident_id = %s ORDER BY t.transaction_id", (incident_id,))
+            return [Transaction(**row) for row in await cursor.fetchall()]
 
     async def execute_refund(
         self, customer_id: str, transaction_id: str, amount: Decimal, idempotency_key: str
