@@ -21,6 +21,7 @@ To change a decision, add a new ADR that supersedes the old one, and mark the ol
 | [0014](0014-evaluation-against-the-real-model.md) | Evaluate the deployed system against the real model, scored from its traces | Accepted | M8 |
 | [0015](0015-deduplication-gate.md) | Deduplication gate: one dispute per customer and transaction | Accepted | M6 |
 | [0016](0016-dispute-store-and-two-statuses.md) | Disputes are stored records in PostgreSQL, with separate execution and business statuses | Accepted | M6 |
+| [0017](0017-token-exchange-for-delegated-work.md) | The supervisor issues its own short-lived token to act for a customer | Accepted | M6 |
 
 ## Template
 

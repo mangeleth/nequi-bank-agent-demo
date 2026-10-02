@@ -71,8 +71,12 @@ Planned steps:
 - **Step 10a (done, ADR-0016):** PostgreSQL dispute records, two separate statuses, `202
   Accepted`, and a status endpoint; processing starts at once inside the supervisor. The
   evaluation submits and polls: 10 of 10, accepted in about 0.3 s, result in about 9 s.
-- **Step 10b:** the queue and a separate worker, with a short-lived internal token issued by
-  the supervisor on the customer's behalf (a customer's login token must not sit in a queue).
+- **Step 10b (in progress):** the queue and a separate worker.
+  - Done: the supervisor issues its own 2-minute token to act for a customer, valid for one
+    transaction, signed by a key that never leaves Key Vault (ADR-0017). A customer's login token
+    is no longer forwarded and never has to sit in a queue.
+  - Next: the queue (at most 2 deliveries, then a dead-letter queue), the worker, and failure
+    tests on the cluster (a killed worker, a poison message).
   Disputes are stored durably in **PostgreSQL** (a unique constraint on the dispute key; Redis
   stays in front as the fast path), with two separate statuses: an *execution status* for the
   run of the graph and a *business status* for the customer's dispute ([#12](https://github.com/mangeleth/nequi-bank-agent-demo/issues/12)).

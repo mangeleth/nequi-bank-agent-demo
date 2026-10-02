@@ -73,7 +73,7 @@ flowchart LR
     end
 
     aoai["Azure OpenAI<br/>gpt-4o"]
-    kv["Key Vault<br/>Langfuse keys,<br/>database password"]
+    kv["Key Vault<br/>Langfuse keys, database password,<br/>token signing key"]
     lf["Langfuse Cloud<br/>traces, tokens, cost"]
     acr["Container Registry<br/>images by git SHA"]
     planned["Planned in M6<br/>dispute queue and worker · refund execution<br/>known-incident registry"]
@@ -81,8 +81,9 @@ flowchart LR
     app -- "POST /v1/disputes (202)<br/>GET /v1/disputes/id" --> sup
     sup <-- "claim key<br/>sha256(user, transaction)" --> redis
     sup <-- "store, update status" --> pg
-    sup -- "JWT + traceparent" --> fraud
-    sup -- "JWT + traceparent" --> ledger
+    sup -- "its own 2-minute token<br/>+ traceparent" --> fraud
+    sup -- "its own 2-minute token<br/>+ traceparent" --> ledger
+    sup -. "sign (key never leaves)" .-> kv
     fraud -- "REST" --> core
     ledger -- "MCP" --> core
     sup -- "ownership, refund history" --> core
@@ -213,6 +214,9 @@ flowchart LR
 
 - Request bodies have no `user_id` field; identity comes only from a fully verified JWT
   (signature, expiry, issuer, audience, one pinned algorithm).
+- The customer's login token stops at the supervisor. The agents receive a token the supervisor
+  issues for that customer and that one transaction, valid for two minutes
+  ([ADR-0017](docs/adr/0017-token-exchange-for-delegated-work.md)).
 - The defence does not rely on the model resisting prompt injection.
 
 ## Model: gpt-4o at temperature 0
@@ -254,13 +258,13 @@ The unit tests script the model; this measures it. `make eval-cluster` sends ten
 the system deployed on AKS and scores each run from its Langfuse trace
 ([ADR-0014](docs/adr/0014-evaluation-against-the-real-model.md)).
 
-| Metric | Latest run (commit `15354ab`, gpt-4o 2024-11-20) |
+| Metric | Latest run (commit `31a272a`, gpt-4o 2024-11-20) |
 |---|---|
 | Task success (expected status, decision, policy route, and customer message) | 10 of 10 |
 | Tool calls correct (required calls made, nothing else looked up) | 100% |
 | Numeric groundedness (numbers the models wrote appear in the tool results) | 100% |
 | Agent calls that were retries | 0 |
-| Total spending for ten attempts | $0.1301 |
+| Total spending for ten attempts | $0.1297 |
 | Cost per success | $0.0130 |
 | Time to accept a dispute (the `202`), median | None |
 | Time to result, median / max | None |
