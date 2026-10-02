@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: test-db test-servicebus venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster redis-image postgres-image postgres-password signing-key signing-key-publish servicebus-create sb-grant demo-reset test guard-clean build push deploy smoke release
+.PHONY: test-db test-servicebus venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster redis-image postgres-image postgres-password signing-key signing-grant signing-key-publish servicebus-create sb-grant demo-reset test guard-clean build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -219,7 +219,7 @@ postgres-password:
 SIGNING_KEY = supervisor-signing-key
 
 ## Create the key the supervisor signs its own tokens with (ADR-0017). The private half is
-## generated inside Key Vault and cannot be read out; id-supervisor may only ask for signatures.
+## generated inside Key Vault and cannot be read out. Grant its use with `make signing-grant`.
 ## Skips creation if the key exists (a new version would invalidate the published public key).
 signing-key:
 	az role assignment create -o none --role "Key Vault Crypto Officer" \
@@ -234,8 +234,12 @@ signing-key:
 			echo "waiting for the Crypto Officer role to take effect..."; sleep 20; \
 		done; \
 	fi
+
+## Allow a service's identity to sign with that key. Only the service that runs triages needs it.
+## Usage: make signing-grant SERVICE=triage-worker
+signing-grant:
 	az role assignment create -o none --role "Key Vault Crypto User" \
-		--assignee-object-id $$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-supervisor --query principalId -o tsv) \
+		--assignee-object-id $$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) --query principalId -o tsv) \
 		--assignee-principal-type ServicePrincipal \
 		--scope $$(az keyvault show -n $(KEYVAULT_NAME) --query id -o tsv)/keys/$(SIGNING_KEY)
 
@@ -361,9 +365,9 @@ push: acr-login
 ## image is pinned to this commit, and WI_CLIENT_ID is the service's managed identity (if any).
 ## Config and secret mounts are applied BEFORE the workload: a pod reads them once, when it
 ## starts, so a pod created first would start with the old ones.
-RENDER = IMAGE=$(IMAGE) WI_CLIENT_ID=$$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) --query clientId -o tsv 2>/dev/null) \
+RENDER = IMAGE=$(IMAGE) IMAGE_TAG=$(IMAGE_TAG) WI_CLIENT_ID=$$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) --query clientId -o tsv 2>/dev/null) \
 	AZURE_TENANT_ID=$$(az account show --query tenantId -o tsv) \
-	envsubst '$$IMAGE $$ACR_NAME $$WI_CLIENT_ID $$AZURE_TENANT_ID $$KEYVAULT_NAME $$AOAI_NAME $$AOAI_DEPLOYMENT $$AOAI_API_VERSION $$JWT_ISSUER $$JWT_AUDIENCE $$LANGFUSE_BASE_URL'
+	envsubst '$$IMAGE $$IMAGE_TAG $$SERVICEBUS_NAMESPACE $$SERVICEBUS_QUEUE $$ACR_NAME $$WI_CLIENT_ID $$AZURE_TENANT_ID $$KEYVAULT_NAME $$AOAI_NAME $$AOAI_DEPLOYMENT $$AOAI_API_VERSION $$JWT_ISSUER $$JWT_AUDIENCE $$LANGFUSE_BASE_URL'
 WORKLOAD_FILES = k8s/$(SERVICE)/deployment.yaml k8s/$(SERVICE)/statefulset.yaml
 
 deploy:

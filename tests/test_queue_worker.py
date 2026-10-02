@@ -188,3 +188,76 @@ async def test_happy_path_still_works_through_the_queue(gate):
     async with Supervisor(gate=gate()) as sup:
         dispute_id = (await sup.post()).json()["dispute_id"]
         assert (await sup.finished(dispute_id))["status"] == "refund_approved"
+
+
+# --- Intake API and worker as separate processes -------------------------------------------------
+
+
+class RemoteQueue:
+    """A queue that is not in this process, like Service Bus: the intake API must not consume it."""
+
+    def __init__(self):
+        self._inner = InMemoryQueue()
+        self.send, self.receive = self._inner.send, self._inner.receive
+        self.complete, self.abandon, self.dead_letter = self._inner.complete, self._inner.abandon, self._inner.dead_letter
+        self.ping = self._inner.ping
+
+
+async def test_intake_only_accepts_and_a_separate_worker_does_the_work():
+    from services.supervisor.worker import create_app as create_worker
+    from shared.refund_policy import RefundPolicyConfig
+    from shared.tracing import Tracing
+    from tests.fakes import ScriptedChatModel
+    from tests.jwt_helpers import DELEGATION, SIGNER
+
+    queue, store = RemoteQueue(), InMemoryDisputeStore()
+    async with Supervisor(queue=queue, store=store) as intake:
+        accepted = await intake.post()
+        dispute_id = accepted.json()["dispute_id"]
+        await asyncio.sleep(0.1)
+
+        # The intake API accepted the dispute and did nothing else with it.
+        assert accepted.status_code == 202
+        assert (await intake.get(dispute_id)).json()["execution_status"] == "queued"
+        assert intake.model.seen == []
+
+        # A worker, with its own model and credentials, picks it up from the queue.
+        worker_model = ScriptedChatModel(script=HAPPY)
+        worker = create_worker(model=worker_model, specialists=intake.specialists, tracing=Tracing(),
+                               policy=RefundPolicyConfig(), store=store, queue=queue, signer=SIGNER,
+                               delegation=DELEGATION, retry_delay_seconds=0, shutdown_grace_seconds=0.2)
+        async with worker.router.lifespan_context(worker):
+            view = await intake.finished(dispute_id)
+
+        assert (view["execution_status"], view["status"]) == ("finished", "refund_approved")
+        assert len(worker_model.seen) == len(HAPPY) and intake.model.seen == []
+
+
+async def test_intake_is_ready_even_when_the_agents_are_down():
+    class AgentsDown(SlowSpecialists):
+        async def ready(self):
+            return False
+
+    async with Supervisor(specialists=AgentsDown()) as sup:
+        assert (await sup.http.get("/readyz")).status_code == 200  # disputes can still be accepted and queued
+
+
+async def test_worker_health_reports_a_stopped_consumer():
+    import httpx as _httpx
+
+    from services.supervisor.worker import create_app as create_worker
+    from shared.refund_policy import RefundPolicyConfig
+    from shared.tracing import Tracing
+    from tests.fakes import ScriptedChatModel
+    from tests.jwt_helpers import DELEGATION, SIGNER
+
+    worker = create_worker(model=ScriptedChatModel(script=HAPPY), specialists=SlowSpecialists(), tracing=Tracing(),
+                           policy=RefundPolicyConfig(), store=InMemoryDisputeStore(), queue=InMemoryQueue(),
+                           signer=SIGNER, delegation=DELEGATION, shutdown_grace_seconds=0.2)
+    async with worker.router.lifespan_context(worker):
+        async with _httpx.AsyncClient(transport=_httpx.ASGITransport(app=worker), base_url="http://worker") as http:
+            assert (await http.get("/healthz")).status_code == 200
+            worker.state.consumer.cancel()
+            await asyncio.sleep(0.05)
+            assert (await http.get("/healthz")).status_code == 503  # Kubernetes restarts the pod
+            assert (await http.get("/readyz")).status_code == 200

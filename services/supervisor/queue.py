@@ -136,16 +136,17 @@ class ServiceBusQueue:
     async def receive(self) -> AsyncIterator[Delivery]:
         # One receiver for the worker's lifetime: a message must be settled on the receiver that
         # received it. No prefetch, so we never lock messages we are not yet working on.
+        # It stays open until close(), not until this loop ends: at shutdown the loop stops first,
+        # and the runs still in progress need the receiver to complete their messages.
         self._receiver = self._client.get_queue_receiver(self._queue_name, prefetch_count=0)
-        async with self._receiver:
-            async for message in self._receiver:
-                try:
-                    dispute_id = UUID(str(message))
-                except ValueError:
-                    await self._receiver.dead_letter_message(message, reason="the message is not a dispute ID")
-                    continue
-                # The broker counts deliveries that already failed; this one is the next.
-                yield Delivery(dispute_id=dispute_id, delivery_count=(message.delivery_count or 0) + 1, handle=message)
+        async for message in self._receiver:
+            try:
+                dispute_id = UUID(str(message))
+            except ValueError:
+                await self._receiver.dead_letter_message(message, reason="the message is not a dispute ID")
+                continue
+            # The broker counts deliveries that already failed; this one is the next.
+            yield Delivery(dispute_id=dispute_id, delivery_count=(message.delivery_count or 0) + 1, handle=message)
 
     async def complete(self, delivery: Delivery) -> None:
         await self._receiver.complete_message(delivery.handle)
@@ -173,5 +174,5 @@ class ServiceBusQueue:
             return False
 
     async def close(self) -> None:
-        await self._client.close()
+        await self._client.close()  # also closes the sender and the receiver
         await self._credential.close()

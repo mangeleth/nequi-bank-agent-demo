@@ -112,19 +112,20 @@ def create_app(
             ledger_url=os.environ["LEDGER_AGENT_URL"],
             core_url=os.environ["CORE_SYSTEMS_URL"],
         )
-        state.tracing = tracing or build_tracing()
         state.gate = gate or build_gate()
         state.store, pool = (store, None) if store is not None else await open_store()
         state.queue = queue or build_queue()
 
         background = [asyncio.create_task(_sweep(state.store))]
+        worker_tracing = None
         if isinstance(state.queue, InMemoryQueue):
             # No separate worker exists for an in-memory queue, so this process is the worker too.
             signing, settings = (signer, delegation) if signer is not None else build_signer()
+            worker_tracing = tracing or build_tracing()
             runner = TriageRunner(
                 store=state.store, queue=state.queue, graph=build_graph(model or build_chat_model()),
                 specialists=state.specialists, policy=policy or RefundPolicyConfig.from_env(),
-                tracing=state.tracing, signer=signing, delegation=settings,
+                tracing=worker_tracing, signer=signing, delegation=settings,
                 recursion_limit=recursion_limit, retry_delay_seconds=retry_delay_seconds,
                 shutdown_grace_seconds=shutdown_grace_seconds,
             )
@@ -135,7 +136,8 @@ def create_app(
         for task in background:
             with suppress(asyncio.CancelledError):
                 await task
-        state.tracing.shutdown()
+        if worker_tracing is not None:
+            worker_tracing.shutdown()
         if isinstance(state.queue, ServiceBusQueue):
             await state.queue.close()
         if pool is not None:
@@ -235,10 +237,11 @@ def create_app(
 
     @app.get("/readyz", include_in_schema=False)
     async def readyz(request: Request) -> JSONResponse:
-        # Not ready without the gate, the dispute store, and the queue: such a replica takes no traffic.
+        # Not ready without the gate, the dispute store, and the queue: such a replica takes no
+        # traffic. The agents are NOT checked: if they are down, disputes are still accepted and
+        # wait in the queue, which is the point of having one.
         state = request.app.state
-        ready = (await state.gate.ping() and await state.store.ping() and await state.queue.ping()
-                 and await state.specialists.ready())
+        ready = await state.gate.ping() and await state.store.ping() and await state.queue.ping()
         return JSONResponse({"status": "ready" if ready else "not ready"}, status_code=200 if ready else 503)
 
     return app

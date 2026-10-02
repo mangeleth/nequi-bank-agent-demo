@@ -2,33 +2,32 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: supervisor
+  name: triage-worker
   namespace: disputes
   labels:
-    app.kubernetes.io/name: supervisor
+    app.kubernetes.io/name: triage-worker
     app.kubernetes.io/part-of: dispute-triage
   annotations:
-    # Workload Identity: federated to id-supervisor, which may send to the dispute queue and read
-    # the database password. It cannot call a model, sign a token, or receive from the queue.
+    # Workload Identity: federated to id-triage-worker, which may receive from the dispute queue,
+    # call Azure OpenAI, read its secrets, and ask Key Vault to sign. It cannot send to the queue.
     azure.workload.identity/client-id: ${WI_CLIENT_ID}
-# The pod never calls the Kubernetes API. The Entra ID token exchange uses a separate,
-# short-lived token that the workload identity webhook mounts.
 automountServiceAccountToken: false
 ---
+# The triage worker has no Service: nothing can send it a request. Its work arrives from the queue.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: supervisor
+  name: triage-worker
   namespace: disputes
   labels:
-    app.kubernetes.io/name: supervisor
+    app.kubernetes.io/name: triage-worker
     app.kubernetes.io/part-of: dispute-triage
 spec:
   replicas: 2
   revisionHistoryLimit: 5
   selector:
     matchLabels:
-      app.kubernetes.io/name: supervisor
+      app.kubernetes.io/name: triage-worker
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -37,12 +36,15 @@ spec:
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: supervisor
+        app.kubernetes.io/name: triage-worker
         app.kubernetes.io/part-of: dispute-triage
-        azure.workload.identity/use: "true" # asks the webhook to inject the identity token
+        azure.workload.identity/use: "true"
     spec:
-      serviceAccountName: supervisor
+      serviceAccountName: triage-worker
       automountServiceAccountToken: false
+      # On a deploy or node drain the worker stops taking messages and gets 30 s to finish the
+      # runs in progress; Kubernetes must wait longer than that before killing the pod.
+      terminationGracePeriodSeconds: 60
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -55,34 +57,34 @@ spec:
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
-              app.kubernetes.io/name: supervisor
-          # Count only pods of the same release, so a rolling update spreads the new pods
-          # across nodes instead of balancing them against the old ones.
+              app.kubernetes.io/name: triage-worker
           matchLabelKeys: ["pod-template-hash"]
       containers:
-        - name: api
-          image: ${IMAGE} # <acr>/supervisor:<git-sha>, set by `make deploy`
+        - name: worker
+          # The supervisor's image, started as the worker instead of the API
+          image: ${ACR_NAME}.azurecr.io/supervisor:${IMAGE_TAG}
+          command: ["uvicorn", "services.supervisor.worker:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
           ports:
             - name: http
-              containerPort: 8000
+              containerPort: 8000 # health endpoints only
           envFrom:
             - configMapRef:
-                name: supervisor
+                name: triage-worker
           resources:
             requests:
               cpu: 100m
-              memory: 192Mi
+              memory: 256Mi
             limits:
               memory: 512Mi
           startupProbe:
             httpGet: { path: /healthz, port: http }
             periodSeconds: 2
-            failureThreshold: 30
+            failureThreshold: 45
           readinessProbe:
-            httpGet: { path: /readyz, port: http } # not ready while either agent is not ready
+            httpGet: { path: /readyz, port: http }
             periodSeconds: 5
           livenessProbe:
-            httpGet: { path: /healthz, port: http }
+            httpGet: { path: /healthz, port: http } # fails if the queue consumer has stopped
             periodSeconds: 10
             failureThreshold: 3
           securityContext:
@@ -93,21 +95,15 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-            - name: jwt-public-key
-              mountPath: /etc/jwt
-              readOnly: true
-            - name: langfuse-keys
+            - name: secrets
               mountPath: /mnt/secrets
               readOnly: true
       volumes:
         - name: tmp
           emptyDir: {}
-        - name: jwt-public-key
-          configMap:
-            name: jwt-public-key
-        - name: langfuse-keys
+        - name: secrets
           csi:
             driver: secrets-store.csi.k8s.io
             readOnly: true
             volumeAttributes:
-              secretProviderClass: supervisor-langfuse
+              secretProviderClass: triage-worker-secrets
