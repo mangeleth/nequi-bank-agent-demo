@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: test-db venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster redis-image postgres-image postgres-password signing-key signing-key-publish demo-reset test guard-clean build push deploy smoke release
+.PHONY: test-db test-servicebus venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster redis-image postgres-image postgres-password signing-key signing-key-publish servicebus-create sb-grant demo-reset test guard-clean build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -21,6 +21,16 @@ test-db:
 	@TEST_DATABASE_URL=postgresql://postgres:test@127.0.0.1:55432/postgres .venv/bin/python -m pytest -q; \
 		status=$$?; docker rm -f disputes-test-db >/dev/null; exit $$status
 
+## Test the Service Bus adapter against the real service, on a separate test queue. Uses your
+## own `az login`; the first run grants you access to that queue (it can take a minute to apply).
+test-servicebus:
+	@az servicebus queue create -g $(AKS_RESOURCE_GROUP) --namespace-name $(SERVICEBUS_NAMESPACE) -n disputes-test \
+		--lock-duration PT5M --max-delivery-count 2 -o none
+	@az role assignment create -o none --assignee $$(az ad signed-in-user show --query id -o tsv) \
+		--role "Azure Service Bus Data Owner" \
+		--scope $$(az servicebus queue show -g $(AKS_RESOURCE_GROUP) --namespace-name $(SERVICEBUS_NAMESPACE) -n disputes-test --query id -o tsv)
+	TEST_SERVICEBUS_NAMESPACE=$(SERVICEBUS_NAMESPACE) .venv/bin/python -m pytest -q tests/test_servicebus_queue.py
+
 ## Show the logged-in Azure account and active subscription
 az-check:
 	az account set --subscription $(AZURE_SUBSCRIPTION_ID)
@@ -35,6 +45,7 @@ providers:
 	az provider register --namespace Microsoft.OperationalInsights --wait
 	az provider register --namespace Microsoft.ContainerRegistry --wait
 	az provider register --namespace Microsoft.KeyVault --wait
+	az provider register --namespace Microsoft.ServiceBus --wait
 
 ## Create the resource group (az group create is naturally idempotent)
 rg-create:
@@ -235,6 +246,28 @@ signing-key-publish:
 		--file .local/supervisor-signing-public.pem
 	kubectl create configmap internal-jwt-public-key -n $(K8S_NAMESPACE) \
 		--from-file=internal-jwt-public.pem=.local/supervisor-signing-public.pem --dry-run=client -o yaml | kubectl apply -f -
+
+## Create the dispute queue (ADR-0018): a Service Bus namespace that accepts Entra ID logins only
+## (no connection strings), and a queue with a 5-minute lock and at most 2 deliveries, after
+## which a message moves to the dead-letter queue. Safe to run twice.
+servicebus-create:
+	@if az servicebus namespace show -g $(AKS_RESOURCE_GROUP) -n $(SERVICEBUS_NAMESPACE) -o none 2>/dev/null; then \
+		echo "Service Bus $(SERVICEBUS_NAMESPACE) already exists - skipping create."; \
+	else \
+		az servicebus namespace create -g $(AKS_RESOURCE_GROUP) -n $(SERVICEBUS_NAMESPACE) -l $(AZURE_LOCATION) \
+			--sku Basic --disable-local-auth true -o none; \
+	fi
+	az servicebus queue create -g $(AKS_RESOURCE_GROUP) --namespace-name $(SERVICEBUS_NAMESPACE) -n $(SERVICEBUS_QUEUE) \
+		--lock-duration PT5M --max-delivery-count 2 --enable-dead-lettering-on-message-expiration true -o none
+
+## Allow an identity to send to OR receive from the queue, never both.
+## Usage: make sb-grant SERVICE=supervisor SB_ROLE=Sender | make sb-grant SERVICE=triage-worker SB_ROLE=Receiver
+sb-grant:
+	az role assignment create -o none \
+		--assignee-object-id $$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) --query principalId -o tsv) \
+		--assignee-principal-type ServicePrincipal \
+		--role "Azure Service Bus Data $(SB_ROLE)" \
+		--scope $$(az servicebus queue show -g $(AKS_RESOURCE_GROUP) --namespace-name $(SERVICEBUS_NAMESPACE) -n $(SERVICEBUS_QUEUE) --query id -o tsv)
 
 ## Forget every dispute: gate keys in Redis and records in PostgreSQL (demo and evaluation only)
 demo-reset:

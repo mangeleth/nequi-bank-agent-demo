@@ -96,3 +96,82 @@ class InMemoryQueue:
 
     async def ping(self) -> bool:
         return True
+
+
+class ServiceBusQueue:
+    """Azure Service Bus adapter. Logs in with Entra ID (Workload Identity in the cluster); the
+    namespace has connection strings disabled.
+
+    The delivery rules live in the queue's own settings (`make servicebus-create`): a 5-minute
+    lock, and at most MAX_DELIVERIES deliveries before the broker itself dead-letters a message.
+    So a worker that dies needs no code of ours: its lock expires and the message returns.
+    """
+
+    def __init__(self, namespace: str, queue_name: str, credential=None) -> None:
+        from azure.identity.aio import DefaultAzureCredential
+        from azure.servicebus.aio import ServiceBusClient
+
+        self._credential = credential or DefaultAzureCredential()
+        self._client = ServiceBusClient(f"{namespace}.servicebus.windows.net", self._credential)
+        self._queue_name = queue_name
+        self._sender = None
+        self._receiver = None
+
+    async def _get_sender(self):
+        if self._sender is None:
+            self._sender = self._client.get_queue_sender(self._queue_name)
+        return self._sender
+
+    async def send(self, dispute_id: UUID) -> None:
+        from azure.servicebus import ServiceBusMessage
+        from azure.servicebus.exceptions import ServiceBusError
+
+        try:
+            sender = await self._get_sender()
+            # The body is only the ID. message_id lets the broker's own tools trace a dispute.
+            await sender.send_messages(ServiceBusMessage(str(dispute_id), message_id=str(dispute_id)))
+        except ServiceBusError as exc:
+            raise QueueUnavailable(type(exc).__name__) from exc
+
+    async def receive(self) -> AsyncIterator[Delivery]:
+        # One receiver for the worker's lifetime: a message must be settled on the receiver that
+        # received it. No prefetch, so we never lock messages we are not yet working on.
+        self._receiver = self._client.get_queue_receiver(self._queue_name, prefetch_count=0)
+        async with self._receiver:
+            async for message in self._receiver:
+                try:
+                    dispute_id = UUID(str(message))
+                except ValueError:
+                    await self._receiver.dead_letter_message(message, reason="the message is not a dispute ID")
+                    continue
+                # The broker counts deliveries that already failed; this one is the next.
+                yield Delivery(dispute_id=dispute_id, delivery_count=(message.delivery_count or 0) + 1, handle=message)
+
+    async def complete(self, delivery: Delivery) -> None:
+        await self._receiver.complete_message(delivery.handle)
+
+    async def abandon(self, delivery: Delivery) -> None:
+        # After the last allowed delivery the broker moves the message to the dead-letter queue.
+        await self._receiver.abandon_message(delivery.handle)
+
+    async def dead_letter(self, delivery: Delivery, reason: str) -> None:
+        await self._receiver.dead_letter_message(delivery.handle, reason=reason[:1024])
+
+    async def dead_letter_ids(self, limit: int = 50) -> list[UUID]:
+        """Peek at the dead-letter queue, for operations and tests."""
+        from azure.servicebus import ServiceBusSubQueue
+
+        async with self._client.get_queue_receiver(self._queue_name, sub_queue=ServiceBusSubQueue.DEAD_LETTER) as dlq:
+            return [UUID(str(m)) for m in await dlq.peek_messages(max_message_count=limit)]
+
+    async def ping(self) -> bool:
+        try:
+            sender = await self._get_sender()
+            await asyncio.wait_for(sender.create_message_batch(), timeout=5)  # opens the link, logs in
+            return True
+        except Exception:
+            return False
+
+    async def close(self) -> None:
+        await self._client.close()
+        await self._credential.close()

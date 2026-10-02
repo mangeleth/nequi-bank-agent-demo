@@ -4,6 +4,7 @@ langgraph>=1.0,<2
 langfuse>=3,<5
 azure-identity>=1.19
 azure-keyvault-keys>=4.9
+azure-servicebus>=7.12,<8
 aiohttp>=3.9
 httpx>=0.28
 redis>=5,<9

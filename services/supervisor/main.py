@@ -35,7 +35,7 @@ from services.supervisor.clients import HttpSpecialists, Specialists, Specialist
 from services.supervisor.dedup import DisputeGate, GateUnavailable, build_gate, dispute_key
 from services.supervisor.graph import RECURSION_LIMIT, build_graph
 from services.supervisor.messages import NEEDS_PERSON, RECEIVED
-from services.supervisor.queue import DisputeQueue, InMemoryQueue
+from services.supervisor.queue import DisputeQueue, InMemoryQueue, ServiceBusQueue
 from services.supervisor.store import DisputeRecord, DisputeStore, open_store
 from services.supervisor.triage import RETRY_DELAY_SECONDS, TriageRunner
 from shared.auth import AuthError, AuthSettings, CallerIdentity, bearer_token, verify_token
@@ -68,11 +68,14 @@ def _replay(record: DisputeRecord) -> JSONResponse:
 
 
 def build_queue() -> DisputeQueue:
-    """Choose the queue from QUEUE_BACKEND: `memory` (default; the worker runs in this process)."""
+    """Choose the queue from QUEUE_BACKEND: `memory` (default; the worker runs in this process)
+    or `servicebus` (the worker is a separate deployment)."""
     backend = os.environ.get("QUEUE_BACKEND", "memory").strip()
     if backend == "memory":
         return InMemoryQueue()
-    raise ValueError(f"unknown QUEUE_BACKEND={backend!r} (supported: memory)")
+    if backend == "servicebus":
+        return ServiceBusQueue(os.environ["SERVICEBUS_NAMESPACE"], os.environ["SERVICEBUS_QUEUE"])
+    raise ValueError(f"unknown QUEUE_BACKEND={backend!r} (supported: memory, servicebus)")
 
 
 def create_app(
@@ -133,6 +136,8 @@ def create_app(
             with suppress(asyncio.CancelledError):
                 await task
         state.tracing.shutdown()
+        if isinstance(state.queue, ServiceBusQueue):
+            await state.queue.close()
         if pool is not None:
             await pool.close()
         if http is not None:
