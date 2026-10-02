@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: test-db test-servicebus venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster failure-tests failure-test-kill redis-image postgres-image postgres-password ledger-password ledger-db incident-refunds demo-idp-publish ui run-ui signing-key signing-grant signing-key-publish servicebus-create sb-grant demo-reset test guard-clean validate build push deploy smoke release
+.PHONY: test-db test-servicebus venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster failure-tests failure-test-kill redis-image postgres-image postgres-password ledger-password ledger-db incident-refunds demo-idp-publish ui ui-publish ui-unpublish run-ui signing-key signing-grant signing-key-publish servicebus-create sb-grant demo-reset test guard-clean validate build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -316,6 +316,22 @@ ui:
 	@echo "Demo UI: http://localhost:8501"
 	kubectl port-forward -n $(K8S_NAMESPACE) svc/demo-ui 8501:80
 
+## Publish the demo UI on the internet (ADR-0024): open to anyone, synthetic data only
+DEMO_UI_URL = http://$(DEMO_UI_DNS_LABEL).$(AZURE_LOCATION).cloudapp.azure.com
+ui-publish:
+	DEMO_UI_DNS_LABEL=$(DEMO_UI_DNS_LABEL) envsubst '$$DEMO_UI_DNS_LABEL' < k8s/public/demo-ui.yaml | kubectl apply -f -
+	@echo "waiting for the public IP..."
+	@for i in $$(seq 60); do ip=$$(kubectl get svc demo-ui-public -n $(K8S_NAMESPACE) -o jsonpath='{.status.loadBalancer.ingress[0].ip}'); \
+		[ -n "$$ip" ] && break; sleep 5; done; echo "public IP: $$ip"
+	@for i in $$(seq 30); do curl -fsS -m 5 $(DEMO_UI_URL)/_stcore/health >/dev/null 2>&1 && break; sleep 5; done
+	@curl -fsS -m 5 $(DEMO_UI_URL)/_stcore/health >/dev/null && echo "Demo UI is public: $(DEMO_UI_URL)" \
+		|| echo "Not answering yet; DNS can take a few minutes: $(DEMO_UI_URL)"
+
+## Remove the public address. The UI keeps running inside the cluster (make ui still works).
+ui-unpublish:
+	kubectl delete svc demo-ui-public -n $(K8S_NAMESPACE) --ignore-not-found
+	@echo "The demo UI is no longer public."
+
 ## Run the demo UI locally against the supervisor on :8004 (make run-supervisor)
 run-ui:
 	SUPERVISOR_URL=http://127.0.0.1:8004 .venv/bin/python -m streamlit run services/demo_ui/app.py \
@@ -424,7 +440,7 @@ guard-clean:
 ## Catches a broken file before anything is built or applied.
 validate:
 	@for f in k8s/namespace.yaml k8s/*/*.yaml; do \
-		IMAGE=x IMAGE_TAG=x WI_CLIENT_ID=x AZURE_TENANT_ID=x envsubst < $$f | kubectl apply --dry-run=client -f - >/dev/null \
+		IMAGE=x IMAGE_TAG=x WI_CLIENT_ID=x AZURE_TENANT_ID=x DEMO_UI_DNS_LABEL=x envsubst < $$f | kubectl apply --dry-run=client -f - >/dev/null \
 			|| { echo "INVALID MANIFEST: $$f"; exit 1; }; \
 	done; echo "manifests valid"
 

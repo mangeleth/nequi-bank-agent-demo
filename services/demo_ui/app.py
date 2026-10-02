@@ -177,6 +177,8 @@ def script_tab() -> None:
 
 st.title("🏦 Nequi dispute triage")
 st.caption("A multi-agent dispute system on AKS. Synthetic customers and data only.")
+st.info("Public demo with synthetic data. Each customer and transfer is investigated once until the demo "
+        "is reset; submitting it again shows the existing dispute, at no cost.", icon="ℹ️")
 customer, dashboard, script = st.tabs(["📱 Customer app", "📊 Evaluation dashboard", "🗺️ Demo script"])
 with customer:
     customer_tab()

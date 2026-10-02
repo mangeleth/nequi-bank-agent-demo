@@ -427,8 +427,12 @@ transaction, and a duplicate submission that must be answered from the gate at n
 
 ## Demo UI
 
-A Streamlit app ([ADR-0023](docs/adr/0023-demo-ui.md)), deployed to AKS with no public address:
-`make ui`, then open http://localhost:8501.
+A Streamlit app ([ADR-0023](docs/adr/0023-demo-ui.md)), deployed to AKS.
+
+- **Public link** (when published, [ADR-0024](docs/adr/0024-public-demo-ui.md)):
+  **http://nequi-disputes-demo.eastus2.cloudapp.azure.com**. Open to anyone, synthetic data only.
+  `make ui-publish` / `make ui-unpublish`.
+- **Private:** `make ui`, then http://localhost:8501 (a port-forward).
 
 - **📱 Customer app:** submit one dispute, or two side by side, as a synthetic customer, and watch
   the stored status change live. A dispute decided by a confirmed incident shows *"⚡ Decided
