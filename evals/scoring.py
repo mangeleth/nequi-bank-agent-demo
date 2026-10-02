@@ -97,7 +97,12 @@ def evaluate(run: dict, scenario: dict) -> dict:
             and (body.get("verdict") or {}).get("decision") == expected["decision"]
             and (body.get("approval") or {}).get("route") == expected["policy_route"]
             and expected.get("customer_message_contains", "") in body.get("customer_message", "")
+            # Which confirmed incident decided it, if any (ADR-0022). Absent = must be none.
+            and ((body.get("incident") or {}).get("incident_id")) == expected.get("incident_id")
         )
+    if task_success and "max_model_calls" in expected:
+        # The fast path's whole point: a covered dispute is decided with zero model calls.
+        task_success = run.get("model_calls", 0) <= expected["max_model_calls"]
 
     # What the model was given: the request and every tool result recorded in the trace.
     source_text = json.dumps(request) + "\n" + "\n".join(call.get("output", "") for call in run["tool_calls"])
@@ -114,7 +119,8 @@ def evaluate(run: dict, scenario: dict) -> dict:
         "replayed": run.get("replayed", False),
         "groundedness": (
             numeric_groundedness(_model_text(body), source_text)
-            if accepted and not run.get("replayed", False) else None
+            # n/a when no model wrote anything: a replay, or a dispute decided by an incident
+            if accepted and not run.get("replayed", False) and not body.get("incident") else None
         ),
         "actual": {
             "http_status": run["http_status"],
@@ -123,6 +129,8 @@ def evaluate(run: dict, scenario: dict) -> dict:
             "decision": (body.get("verdict") or {}).get("decision"),
             "policy_route": (body.get("approval") or {}).get("route"),
             "customer_message": body.get("customer_message"),
+            "incident_id": (body.get("incident") or {}).get("incident_id"),
+            "model_calls": run.get("model_calls", 0),
             "escalation_reason": body.get("escalation_reason"),
         },
     }

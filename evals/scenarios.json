@@ -279,5 +279,60 @@
       "http_status": 404,
       "replay": false
     }
+  },
+  {
+    "id": "known-incident-fast-path",
+    "note": "Covered by confirmed incident INC-20261001-01: decided by code, zero model calls (ADR-0022)",
+    "user_id": "user-1002",
+    "request": {
+      "transaction_id": "TX-20261001000009",
+      "reason": "failed_transfer",
+      "claimed_amount": "35000.00",
+      "description": "Le transferí a Banco Andino y la plata nunca llegó"
+    },
+    "expected": {
+      "http_status": 202,
+      "status": "refund_paid",
+      "decision": "refund_recommended",
+      "policy_route": "auto_approved",
+      "required_tool_calls": [],
+      "customer_message_contains": "This transfer was affected by a confirmed problem on our side",
+      "incident_id": "INC-20261001-01",
+      "max_model_calls": 0,
+      "replay": false
+    }
+  },
+  {
+    "id": "incident-window-edge",
+    "note": "The same failure to the same bank, but after the incident window: NOT covered, the agents investigate",
+    "user_id": "user-1002",
+    "request": {
+      "transaction_id": "TX-20261001000011",
+      "reason": "failed_transfer",
+      "claimed_amount": "20000.00",
+      "description": "Otra transferencia a Banco Andino que no llegó"
+    },
+    "expected": {
+      "http_status": 202,
+      "status": "refund_paid",
+      "decision": "refund_recommended",
+      "policy_route": "auto_approved",
+      "required_tool_calls": [
+        {
+          "name": "get_transaction",
+          "args": {
+            "transaction_id": "TX-20261001000011"
+          }
+        },
+        {
+          "name": "get_risk_signals",
+          "args": {
+            "transaction_id": "TX-20261001000011"
+          }
+        }
+      ],
+      "customer_message_contains": "A refund of 20000.00 COP has been paid back to your account.",
+      "replay": false
+    }
   }
 ]

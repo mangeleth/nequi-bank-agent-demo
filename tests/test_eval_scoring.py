@@ -180,3 +180,33 @@ def test_accepted_with_202_is_scored_like_any_accepted_dispute():
     scenario = SCENARIO | {"expected": SCENARIO["expected"] | {"http_status": 202}}
     result = evaluate(run(http_status=202), scenario)
     assert (result["task_success"], result["groundedness"], result["accept_ms"]) == (True, 1.0, 300)
+
+
+def _incident_run(model_calls: int, incident_id: str | None = "INC-20261001-01") -> dict:
+    body = {"status": "refund_paid", "verdict": {"decision": "refund_recommended"},
+            "approval": {"route": "auto_approved"},
+            "customer_message": "This transfer was affected by a confirmed problem on our side: x.",
+            "incident": {"incident_id": incident_id} if incident_id else None, "steps": []}
+    return {"http_status": 202, "body": body, "execution_status": "finished", "dispute_status": "refund_paid",
+            "tool_calls": [], "elapsed_ms": 900, "accept_ms": 300, "total_cost_usd": 0.0, "total_tokens": 0,
+            "model_calls": model_calls}
+
+
+INCIDENT_SCENARIO = {
+    "id": "known-incident-fast-path",
+    "request": {"transaction_id": "TX-20261001000009", "reason": "failed_transfer", "claimed_amount": "35000.00"},
+    "expected": {"http_status": 202, "status": "refund_paid", "decision": "refund_recommended",
+                 "policy_route": "auto_approved", "required_tool_calls": [],
+                 "customer_message_contains": "confirmed problem on our side",
+                 "incident_id": "INC-20261001-01", "max_model_calls": 0},
+}
+
+
+def test_the_fast_path_scenario_passes_only_with_zero_model_calls():
+    assert evaluate(_incident_run(model_calls=0), INCIDENT_SCENARIO)["task_success"]
+    assert not evaluate(_incident_run(model_calls=3), INCIDENT_SCENARIO)["task_success"]  # the agents ran
+
+
+def test_the_fast_path_scenario_requires_the_incident_to_have_decided():
+    assert not evaluate(_incident_run(model_calls=0, incident_id=None), INCIDENT_SCENARIO)["task_success"]
+    assert evaluate(_incident_run(model_calls=0), INCIDENT_SCENARIO)["groundedness"] is None  # no model text
