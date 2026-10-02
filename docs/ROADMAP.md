@@ -10,7 +10,7 @@ Kubernetes manifests and tests are written alongside each service, not at the en
 | **M3** Security boundary + Fraud Agent | `shared/auth.py`, `services/fraud_agent/`, Azure OpenAI + Workload Identity federation | Fraud Agent calling Core Systems and Azure OpenAI with no stored keys | Done |
 | **M4** Ledger Agent | MCP server in Core Systems, `services/ledger_agent/` (MCP client) | Ledger Agent querying settlement state over MCP | Done |
 | **M5** LangGraph supervisor, circuit breakers & tracing | `services/supervisor/` (LangGraph + Langfuse Cloud, keys from Key Vault); steps below | Done |
-| **M6** Safety gate: idempotency and a buffer for Core Banking | Deduplication key at the gate, a message queue for intake, a rate-limited approval drain, refund execution in Core Systems; steps below | Disputes accepted asynchronously; duplicates never reach a model; the ledger is written at a controlled rate | Next |
+| **M6** Safety gate: idempotency, a buffer for Core Banking, and a known-incident fast path | Deduplication key at the gate, a message queue for intake, a rate-limited approval drain, refund execution in Core Systems, an incident registry; steps below | Disputes accepted asynchronously; duplicates and known incidents never reach a model; the ledger is written at a controlled rate | Next |
 | **M7** Demo UI | `services/ui/` (Streamlit) | Nequi-style UI end to end | |
 | **M8** Automated security & failure-mode tests, CI/CD | GitHub Actions (OIDC); the test suite as a merge and deploy gate; see below | Pushing to `main` builds, tests, and deploys automatically | |
 
@@ -56,12 +56,24 @@ Milestone 6 adds the gate that stands between customers, the agents, and the led
   safely (bounded concurrency and requests per second) without exhausting connection pools,
   and retries with backoff; messages that keep failing go to a dead-letter queue for people.
 
+**Known incidents bypass the agents.** When the platform already knows why a group of
+transactions failed, an agent has nothing to investigate (`docs/LEARNINGS.md`, Part 2, entry A).
+- Operations register an incident: transactions from a given source in a given time window
+  failed for a verified reason (for example an ATM cluster with `ATM_DISPENSER_TIMEOUT`).
+- The gate checks each incoming dispute against the incident registry before it reaches the
+  queue. A match calls no model: the dispute goes straight to the deterministic refund path.
+- A batch job refunds every affected transaction under the same idempotency keys, including
+  those of customers who never filed a dispute.
+
 Planned steps:
 - **Step 9:** dispute store and deduplication key in the supervisor (`claim`, `complete`,
   `release`), with tests for 10 simultaneous identical requests.
 - **Step 10:** asynchronous intake: queue, worker, `202 Accepted`, and status endpoint.
 - **Step 11:** refund execution in Core Systems (the first ledger write) with an idempotency
   key, and the rate-limited approval drain with a dead-letter queue.
+- **Step 12:** known-incident fast path: an incident registry in Core Systems, the check at
+  the gate, the batch refund job, and an evaluation scenario that proves a matching dispute
+  makes zero model calls.
 - Azure resources use Entra ID and Workload Identity, with no connection strings (ADR-0001).
 
 ## Milestone 8: the three-tier defensive barrier

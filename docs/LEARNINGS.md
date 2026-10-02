@@ -193,8 +193,8 @@ for what remains ambiguous.
 **What this repository does today.** Every dispute goes through the supervisor and the agents;
 there is no known-incident fast path. The pieces it would build on exist: the refund policy is
 already deterministic code (ADR-0007), and Milestone 6 adds the safety gate, the queue, and the
-idempotent refund execution that a batch refund needs. A fast path would be one more check at
-that gate, before the queue.
+idempotent refund execution that a batch refund needs. The fast path is planned as Step 12 of
+Milestone 6: one more check at that gate, before the queue.
 
 ## B. Measure cost per success, not cost per request
 
