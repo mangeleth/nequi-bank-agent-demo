@@ -99,8 +99,12 @@ def show_trace(dispute_id: str, trace_url: str) -> None:
 def dispute_form(slot: str) -> dict | None:
     """One customer's form. Returns what to submit, or None."""
     user_id = st.selectbox("Customer", list(logic.TRANSACTIONS), key=f"user-{slot}")
-    options = logic.TRANSACTIONS[user_id]
-    tx = st.selectbox("Transfer", options, format_func=lambda t: t.label, key=f"tx-{slot}-{user_id}")
+    # The options are transaction IDs, unique by definition. (Labels can repeat, and a selectbox
+    # tracks its choice by what it displays: two equal labels once silently swapped transfers.)
+    ids = [t.transaction_id for t in logic.TRANSACTIONS[user_id]]
+    chosen = st.selectbox("Transfer", ids, key=f"tx-{slot}-{user_id}",
+                          format_func=lambda tx_id: logic.find_transaction(user_id, tx_id).display)
+    tx = logic.find_transaction(user_id, chosen)
     st.caption(tx.story)
     description = st.text_area("What happened?", logic.DEFAULT_DESCRIPTION, key=f"desc-{slot}", max_chars=1000)
     return {"slot": slot, "user_id": user_id, "tx": tx, "description": description}

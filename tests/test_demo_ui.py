@@ -24,6 +24,15 @@ def test_every_demo_transaction_is_the_customers_and_claims_what_was_debited():
             assert tx.amount == str(row["debited_amount"]), tx.transaction_id
 
 
+def test_each_customers_transfers_display_differently():
+    """A selectbox tracks its choice by what it displays: equal labels once swapped TX-...0001 for
+    TX-...0008 without the viewer noticing."""
+    for user_id, transactions in logic.TRANSACTIONS.items():
+        shown = [t.display for t in transactions]
+        assert len(set(shown)) == len(shown), user_id
+        assert len({t.label for t in transactions}) == len(transactions), user_id
+
+
 def test_login_issues_a_token_the_intake_api_accepts_for_that_customer_only():
     identity = verify_token(logic.login("user-1002", LOGIN), SETTINGS)
     assert identity.user_id == "user-1002"
@@ -206,3 +215,17 @@ def test_langfuse_keys_are_read_from_mounted_files(tmp_path, monkeypatch):
 
     monkeypatch.setenv("LANGFUSE_SECRET_KEY_FILE", str(tmp_path / "missing"))
     assert logic.LangfuseReader.from_env() is None  # no keys: the UI only links to the trace
+
+
+def test_the_chosen_transfer_stays_chosen_across_reruns(monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setenv("EVAL_RESULTS_DIR", "evals/results")
+    page = AppTest.from_file(str(Path(__file__).resolve().parent.parent / "services/demo_ui/app.py"),
+                             default_timeout=30).run()
+    for tx_id, story in (("TX-20261001000001", "Scenario 1"), ("TX-20261001000008", "Scenario 5"),
+                         ("TX-20261001000001", "Scenario 1")):
+        page.selectbox(key="tx-A-user-1001").set_value(tx_id).run()
+        page.run()  # another rerun, as any click causes
+        assert page.selectbox(key="tx-A-user-1001").value == tx_id
+        assert any(c.value.startswith(story) for c in page.caption)

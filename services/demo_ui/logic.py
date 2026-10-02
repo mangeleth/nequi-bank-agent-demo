@@ -31,16 +31,21 @@ class DemoTransaction:
     label: str  # how the app lists it
     story: str  # what the demo shows with it
 
+    @property
+    def display(self) -> str:
+        """The label, plus the end of the ID: two transfers can look alike, an ID cannot."""
+        return f"{self.label} · …{self.transaction_id[-4:]}"
+
 
 TRANSACTIONS: dict[str, list[DemoTransaction]] = {
     "user-1001": [
-        DemoTransaction("TX-20261001000001", "50000.00", "50.000 to ****4821, failed",
+        DemoTransaction("TX-20261001000001", "50000.00", "50.000 to ****4821 at 09:00, failed",
                         "Scenario 1: three agents investigate; approved and paid"),
-        DemoTransaction("TX-20261001000002", "450000.00", "450.000 to ****7710, failed",
+        DemoTransaction("TX-20261001000002", "450000.00", "450.000 to ****7710 at 07:00, failed",
                         "Over the automatic limit: a person decides"),
-        DemoTransaction("TX-20261001000003", "80000.00", "80.000 to ****4821, completed",
+        DemoTransaction("TX-20261001000003", "80000.00", "80.000 to ****4821 at 06:00, completed",
                         "Settled normally: no refund is due"),
-        DemoTransaction("TX-20261001000008", "50000.00", "50.000 to ****4821, failed",
+        DemoTransaction("TX-20261001000008", "50000.00", "50.000 to ****4821 at 08:00, failed",
                         "Scenario 5: try a prompt injection in the description"),
     ],
     "user-1002": [
@@ -48,17 +53,17 @@ TRANSACTIONS: dict[str, list[DemoTransaction]] = {
                         "Scenario 2: covered by a confirmed incident; no model is used"),
         DemoTransaction("TX-20261001000011", "20000.00", "20.000 to Banco Andino at 10:30, failed",
                         "Scenario 2, side by side: the same failure after the window; the agents investigate"),
-        DemoTransaction("TX-20261001000004", "30000.00", "30.000 to ****0093, failed",
+        DemoTransaction("TX-20261001000004", "30000.00", "30.000 to ****0093 at 11:00, failed",
                         "High fraud risk: the security team reviews it"),
-        DemoTransaction("TX-20261001000005", "20000.00", "20.000 to ****5512, in progress",
+        DemoTransaction("TX-20261001000005", "20000.00", "20.000 to ****5512 at 12:00, in progress",
                         "Still in flight: no decision yet"),
     ],
     "user-1003": [
         DemoTransaction("TX-20261001000010", "60000.00", "60.000 to Banco Andino at 09:25, failed",
                         "Scenario 3: after the batch refund it is already returned"),
-        DemoTransaction("TX-20261001000007", "25000.00", "25.000 to ****3307, failed",
+        DemoTransaction("TX-20261001000007", "25000.00", "25.000 to ****3307 at 10:00, failed",
                         "Already 3 automatic refunds this month: a person decides"),
-        DemoTransaction("TX-20261001000006", "40000.00", "40.000 to ****3307, reversed",
+        DemoTransaction("TX-20261001000006", "40000.00", "40.000 to ****3307 two days ago, reversed",
                         "Already refunded: nothing is due"),
     ],
 }
