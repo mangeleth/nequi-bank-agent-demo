@@ -80,8 +80,12 @@ Planned steps:
   - Verified on the cluster: a polite worker stop, a force-killed worker (the dispute is
     finished by another worker after the 5-minute lock), and a poison message (dead-lettered
     after two deliveries).
-- **Step 11:** refund execution in Core Systems (the first ledger write) with an idempotency
-  key, and the rate-limited approval drain with a dead-letter queue.
+- **Step 11 (in progress):** paying approved refunds.
+  - Done: `POST /v1/core-banking/refunds` with a required idempotency key and the ledger's own
+    rules; the ledger moved to PostgreSQL so both Core Systems pods share it (ADR-0019);
+    verified on the cluster across pods.
+  - Next: the worker pays approved refunds through a rate-limited drain with a dead-letter queue,
+    and a dispute reaches `refund_paid` only when the ledger confirms.
 - **Step 12:** known-incident fast path: an incident registry in Core Systems, the check at
   the gate, the batch refund job, and an evaluation scenario that proves a matching dispute
   makes zero model calls.

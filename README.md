@@ -89,10 +89,10 @@ the refund and the transaction's new status written together or not at all
 ([ADR-0019](docs/adr/0019-shared-ledger-in-postgresql.md)). Redis is not used for this: ours
 keeps nothing across a restart, which is acceptable for a duplicate check and not for money.
 
-Status: built and tested in Core Systems (`tests/test_core_refunds.py`, against the in-memory and
-the PostgreSQL ledger). The cluster still runs the in-memory ledger, and the worker does not call
-the endpoint yet, so an approved refund is still reported as `refund_approved`, not paid. That is
-the rest of Milestone 6, Step 11.
+Status: deployed. On the cluster both Core Systems pods share one ledger: a refund paid by one
+pod and retried on the other returns the same refund. The worker does not call the endpoint yet,
+so an approved refund is still reported as `refund_approved`, not paid. That is the rest of
+Milestone 6, Step 11.
 
 ## Architecture
 

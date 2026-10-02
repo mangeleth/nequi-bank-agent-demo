@@ -1,6 +1,6 @@
 # ADR-0019: The ledger is one shared PostgreSQL store, and the database enforces "pay once"
 
-- **Status:** Accepted (adapter built and tested; not deployed yet)
+- **Status:** Accepted (deployed)
 - **Date:** 2026-10-02
 - **Milestone:** M6 (Step 11)
 
@@ -36,6 +36,29 @@ A test shows this on purpose (`test_two_instances_of_core_systems`).
   customer's case stands. The ledger (Core Banking) says where the money is. The guarantee
   against paying twice is in the ledger, because it cannot rely on its callers behaving.
 - Risk signals stay in memory: they are read-only reference data.
+
+## Where it runs
+The same PostgreSQL pod as the dispute records, with a **separate database and user**
+(`make ledger-password`, `make ledger-db`):
+
+| Database | Owner | Who may connect |
+|---|---|---|
+| `disputes` | `disputes` | the supervisor and the worker |
+| `ledger` | `ledger` | Core Systems only (`id-core-systems` reads `ledger-password` and nothing else) |
+
+A second pod would not fit comfortably in the 4 vCPU quota, and separate users already keep the
+two systems' data and credentials apart.
+
+## Verified on the cluster
+A refund paid by one Core Systems pod, then the same request on the other pod:
+
+| Request | Pod | Result |
+|---|---|---|
+| Key 1 | A | `201`, refund `RF-60a0...` |
+| The same key | B | `200`, `Idempotent-Replay: true`, the same refund |
+| A new key, same transaction | B | `422 already_refunded` |
+
+One refund row in the ledger. The `ledger` user is refused a connection to `disputes`.
 
 ## Why not Redis
 - **Our Redis forgets on restart.** It runs with no snapshots and no append-only file, on
