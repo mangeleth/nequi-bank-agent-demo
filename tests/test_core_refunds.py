@@ -2,6 +2,7 @@
 moves money. The rules under test are the ledger's own, whatever the caller decided upstream."""
 
 import asyncio
+import os
 from contextlib import asynccontextmanager
 
 import httpx
@@ -21,9 +22,27 @@ KEY = "dispute:5f0e7c1a9b2d4e6f8a1b3c5d7e9f0a1b"
 URL = "/v1/core-banking/refunds"
 
 
+DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "")
+
+
+@pytest.fixture(params=["in_memory", pytest.param("postgres", marks=pytest.mark.skipif(
+    not DATABASE_URL, reason="needs a PostgreSQL: run `make test-db`"))], autouse=True)
+async def backend(request, monkeypatch):
+    """Every test in this file runs against the in-memory ledger and the PostgreSQL ledger."""
+    monkeypatch.setenv("CORE_SYSTEMS_BACKEND", request.param)
+    if request.param == "postgres":
+        monkeypatch.setenv("LEDGER_DATABASE_URL", DATABASE_URL)
+        import psycopg
+
+        async with await psycopg.AsyncConnection.connect(DATABASE_URL, autocommit=True) as conn:
+            await conn.execute("DROP TABLE IF EXISTS ledger_refunds, ledger_transactions")  # a fresh ledger per test
+    return request.param
+
+
 @asynccontextmanager
 async def core():
-    """A fresh Core Systems (its own copy of the ledger), driven by an async HTTP client."""
+    """A Core Systems instance, driven by an async HTTP client. With the in-memory ledger each
+    instance has its own data; with PostgreSQL every instance shares one ledger."""
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://core-systems") as http:
             yield http
@@ -158,10 +177,24 @@ async def test_refund_is_not_offered_as_an_mcp_tool():
     assert tools == {"get_transaction", "get_refund_history"}  # read-only: nothing that moves money
 
 
-async def test_each_core_systems_start_has_its_own_ledger():
-    # Documents the limit of the in-memory adapter: state is per process (see ADR-0019).
-    async with core() as http:
-        await refund(http)
-        assert await history(http) == (1, "50000.00")
-    async with core() as http:
-        assert await history(http) == (0, "0.00")
+async def test_two_instances_of_core_systems(backend):
+    """The question behind ADR-0019: a refund is paid by one replica; what does another one know?"""
+    async with core() as replica_a:
+        paid = await refund(replica_a)
+        assert paid.status_code == 201
+
+    async with core() as replica_b:  # a different instance, as another pod would be
+        same_key = await refund(replica_b)
+        other_key = await refund(replica_b, key="dispute:another-key-0123456789abcdef")
+        seen = await transaction(replica_b)
+
+        if backend == "postgres":
+            # One shared ledger: the other replica knows, and both protections hold.
+            assert same_key.status_code == 200 and same_key.json()["refund_id"] == paid.json()["refund_id"]
+            assert other_key.status_code == 422 and other_key.json()["detail"]["code"] == "already_refunded"
+            assert seen["settlement_status"] == "reversed"
+            assert await history(replica_b) == (1, "50000.00")
+        else:
+            # In memory, the other replica knows nothing: it PAYS AGAIN. This is why a ledger
+            # that is written to cannot run as two replicas without a shared store.
+            assert same_key.status_code == 201 and same_key.json()["refund_id"] != paid.json()["refund_id"]

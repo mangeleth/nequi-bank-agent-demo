@@ -82,9 +82,17 @@ credited. If every check above it were wrong, the ledger would still refuse to p
 | The same key for a different transaction or amount | `409 Conflict` |
 | The ledger's rules refuse it | `422` with a reason code; the key is not used up |
 
-Status: built and tested in Core Systems (`tests/test_core_refunds.py`). The worker does not call
-it yet, so an approved refund is still reported as `refund_approved`, not paid. That is the rest
-of Milestone 6, Step 11.
+Both protections need one ledger shared by every replica. With the ledger in each pod's memory,
+a retry that lands on the other pod is paid again. So the ledger is a PostgreSQL store, and the
+database enforces the rules itself: a unique idempotency key, one refund per transaction, and
+the refund and the transaction's new status written together or not at all
+([ADR-0019](docs/adr/0019-shared-ledger-in-postgresql.md)). Redis is not used for this: ours
+keeps nothing across a restart, which is acceptable for a duplicate check and not for money.
+
+Status: built and tested in Core Systems (`tests/test_core_refunds.py`, against the in-memory and
+the PostgreSQL ledger). The cluster still runs the in-memory ledger, and the worker does not call
+the endpoint yet, so an approved refund is still reported as `refund_approved`, not paid. That is
+the rest of Milestone 6, Step 11.
 
 ## Architecture
 
