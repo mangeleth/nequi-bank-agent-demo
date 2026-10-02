@@ -113,7 +113,7 @@ def triage(script, specialists=None, headers=None, **app_options):
     specialists = specialists or FakeSpecialists()
     app = create_app(auth=SETTINGS, model=model, specialists=specialists, tracing=Tracing(),
                      policy=RefundPolicyConfig(), gate=InMemoryGate(), store=InMemoryDisputeStore(),
-                     signer=SIGNER, delegation=DELEGATION, **app_options)
+                     signer=SIGNER, delegation=DELEGATION, retry_delay_seconds=0, **app_options)
     auth_headers = bearer("user-1001") if headers is None else headers
     with TestClient(app) as client:
         submitted = client.post(URL, json=DISPUTE, headers=auth_headers)
@@ -272,16 +272,18 @@ def test_refund_history_unavailable_fails_closed():
     assert body["approval"] is None  # never auto-approved on missing history
 
 
-def test_unexpected_error_ends_in_human_review_not_a_crash():
+def test_unexpected_error_is_retried_once_then_goes_to_a_person():
     class BrokenSpecialists(FakeSpecialists):
         async def reconcile_ledger(self, dispute, token, traceparent=None):
+            self.ledger_calls += 1
             raise RuntimeError("bug in our own code")
 
-    response, _, _ = triage(HAPPY, BrokenSpecialists())
-    body = response.json()
-    assert response.status_code == 200
-    assert (body["status"], body["escalation_reason"]) == (
-        "pending_human_approval", "an unexpected error stopped the triage")
+    outcome, _, specialists = triage([route("ledger_agent")], BrokenSpecialists())  # asks for the ledger each time
+
+    assert specialists.ledger_calls == 2  # the first delivery, and one retry
+    assert (outcome.view["execution_status"], outcome.view["status"]) == ("failed", "pending_human_approval")
+    assert outcome.view["result"] is None
+    assert "marked for review by a person" in outcome.view["customer_message"]  # never "failed" to the customer
 
 
 # --- Identity ---------------------------------------------------------------------------------------

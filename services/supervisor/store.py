@@ -64,8 +64,13 @@ class DisputeStore(Protocol):
     async def get(self, dispute_id: UUID, user_id: str) -> DisputeRecord | None:
         """The customer's dispute, or None if it does not exist or belongs to someone else."""
 
-    async def start(self, dispute_id: UUID, customer_message: str) -> bool:
-        """queued -> running, received -> investigating. False if it was not queued."""
+    async def load(self, dispute_id: UUID) -> DisputeRecord | None:
+        """The dispute by ID, for the worker. Not scoped to a customer: never call from the API."""
+
+    async def start(self, dispute_id: UUID, customer_message: str, *, takeover: bool = False,
+                    max_attempts: int = 1_000) -> bool:
+        """queued -> running, received -> investigating. With `takeover`, a dispute still marked
+        running (its worker died) may be started again. False once `max_attempts` is reached."""
 
     async def finish(self, dispute_id: UUID, result: TriageResult) -> bool:
         """running -> finished, with the business status and message from the result."""
@@ -125,12 +130,19 @@ class InMemoryDisputeStore:
         record = self._by_id.get(dispute_id)
         return record if record is not None and record.user_id == user_id else None
 
-    async def start(self, dispute_id, customer_message):
+    async def load(self, dispute_id):
+        return self._by_id.get(dispute_id)
+
+    async def start(self, dispute_id, customer_message, *, takeover=False, max_attempts=1_000):
         record = self._by_id.get(dispute_id)
+        if record is None or record.attempts >= max_attempts:
+            return False
+        restarting = record.execution_status == ExecutionStatus.RUNNING
         return self._change(
-            dispute_id, (ExecutionStatus.QUEUED.value,), "run started",
+            dispute_id, _ACTIVE if takeover else (ExecutionStatus.QUEUED.value,),
+            "run restarted after a failed delivery" if restarting else "run started",
             execution_status=ExecutionStatus.RUNNING, business_status=DisputeStatus.INVESTIGATING,
-            customer_message=customer_message, attempts=(record.attempts + 1) if record else 1,
+            customer_message=customer_message, attempts=record.attempts + 1,
         )
 
     async def finish(self, dispute_id, result):
@@ -213,10 +225,11 @@ class PostgresDisputeStore:
             await conn.execute("SELECT pg_advisory_xact_lock(727001)")
             await conn.execute(SCHEMA)
 
-    async def _change(self, dispute_id: UUID, expected: tuple[str, ...], note: str, assignments: str, **params) -> bool:
+    async def _change(self, dispute_id: UUID, expected: tuple[str, ...], note: str, assignments: str,
+                      also: str = "", **params) -> bool:
         """Update one dispute only if it is in an expected status, and log the change, atomically."""
         sql = (f"WITH changed AS (UPDATE disputes SET {assignments}, updated_at = now() "
-               "WHERE dispute_id = %(dispute_id)s AND execution_status = ANY(%(expected)s) RETURNING *) "
+               f"WHERE dispute_id = %(dispute_id)s AND execution_status = ANY(%(expected)s) {also} RETURNING *) "
                f"{_LOG_EVENT} RETURNING 1")
         async with self._pool.connection() as conn, conn.transaction():
             cursor = await conn.execute(sql, {"dispute_id": dispute_id, "expected": list(expected), "note": note} | params)
@@ -250,12 +263,20 @@ class PostgresDisputeStore:
             row = await cursor.fetchone()
         return _record(row) if row else None
 
-    async def start(self, dispute_id, customer_message):
+    async def load(self, dispute_id):
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(f"SELECT {_COLUMNS} FROM disputes WHERE dispute_id = %s", (dispute_id,))
+            row = await cursor.fetchone()
+        return _record(row) if row else None
+
+    async def start(self, dispute_id, customer_message, *, takeover=False, max_attempts=1_000):
         return await self._change(
-            dispute_id, (ExecutionStatus.QUEUED.value,), "run started",
+            dispute_id, _ACTIVE if takeover else (ExecutionStatus.QUEUED.value,),
+            "run restarted after a failed delivery" if takeover else "run started",
             "execution_status = 'running', business_status = 'investigating', "
             "customer_message = %(customer_message)s, attempts = attempts + 1",
-            customer_message=customer_message)
+            also="AND attempts < %(max_attempts)s",
+            customer_message=customer_message, max_attempts=max_attempts)
 
     async def finish(self, dispute_id, result):
         from psycopg.types.json import Jsonb

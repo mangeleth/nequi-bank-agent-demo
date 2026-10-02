@@ -125,13 +125,14 @@ class SlowSpecialists(FakeSpecialists):
 class Supervisor:
     """A supervisor app with scripted dependencies, driven by an async HTTP client."""
 
-    def __init__(self, gate=None, store=None, specialists=None, script=HAPPY):
+    def __init__(self, gate=None, store=None, specialists=None, script=HAPPY, queue=None):
         self.model = ScriptedChatModel(script=script)
         self.specialists = specialists or SlowSpecialists()
         self.gate = gate or InMemoryGate()
         self.app = create_app(auth=SETTINGS, model=self.model, specialists=self.specialists, tracing=Tracing(),
                               policy=RefundPolicyConfig(), gate=self.gate, store=store or InMemoryDisputeStore(),
-                              signer=SIGNER, delegation=DELEGATION)
+                              queue=queue, signer=SIGNER, delegation=DELEGATION, retry_delay_seconds=0,
+                              shutdown_grace_seconds=0.2)
 
     async def __aenter__(self):
         self._lifespan = self.app.router.lifespan_context(self.app)
