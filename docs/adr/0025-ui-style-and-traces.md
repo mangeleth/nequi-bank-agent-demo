@@ -18,7 +18,7 @@ identity could be mistaken for Nequi itself, or for a phishing page.
   descriptions, badges, the dashboard, the disclaimer. What the system produced is shown as it
   is (in English): the customer message, the steps taken, the trace's step names, and the models'
   inputs and outputs. The page says so next to the customer message.
-- **Labelled as independent, on every view:** "Demo independiente para una entrevista: no es un producto de Nequi
+- **Labelled as independent, on every view:** "Esta es una demo: no es un producto de Nequi
   ni está afiliada a Nequi. Solo clientes y datos sintéticos; nunca ingreses datos personales o
   bancarios reales." The page never asks for credentials.
 - **The trace inside the page.** For an agent investigation, the UI reads the run's observations

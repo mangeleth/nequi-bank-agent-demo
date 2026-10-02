@@ -531,7 +531,7 @@ The UI uses the system only as a customer's app would: the intake API, with a lo
 cannot reach the queues, the database, the model, or Core Systems.
 
 Its look is inspired by Nequi's public palette and type, with no logo, and every view says it is
-an independent interview demo, not a Nequi product.
+a demo, not a Nequi product and not affiliated with Nequi.
 
 
 ## Run it locally

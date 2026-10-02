@@ -481,11 +481,11 @@ HEADER = """
   <div style="color:#FFFFFF;font-weight:800;font-size:1.9rem;line-height:1.2;margin:.3rem 0">
     ¿Tu plata no llegó? <span style="color:#DA0081">La revisamos, decidimos y te la devolvemos.</span></div>
   <div style="color:#ECE7F5;font-size:.95rem">Tres agentes de IA investigan sobre Azure Kubernetes; el código
-    aprueba y paga, una sola vez. Hecho para una entrevista en Nequi.</div>
+    aprueba y paga, una sola vez.</div>
 </div>
 """
 st.markdown(HEADER, unsafe_allow_html=True)
-st.caption("Demo independiente para una entrevista: no es un producto de Nequi ni está afiliada a Nequi. Solo "
+st.caption("Esta es una demo: no es un producto de Nequi ni está afiliada a Nequi. Solo "
            "clientes y datos sintéticos; nunca ingreses datos personales o bancarios reales. Cada cliente y "
            "transferencia se revisa una sola vez hasta que se reinicia la demo; si la envías de nuevo, verás la "
            "disputa existente, sin costo.")
