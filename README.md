@@ -6,6 +6,56 @@ Proof-of-concept Dispute Triage & Resolution multi-agent system on AKS.
 - Architecture decisions: [docs/adr](docs/adr/README.md)
 - Learnings (what went wrong and what changed): [docs/LEARNINGS.md](docs/LEARNINGS.md)
 
+## How refunds are approved
+
+The AI agents investigate and **recommend**; they can never approve or move money.
+A deterministic policy (plain Python, no LLM) decides who approves, using facts from the
+core banking ledger and risk engine ([ADR-0007](docs/adr/0007-tiered-refund-approval.md)).
+
+```mermaid
+flowchart TD
+    customer["📱 Customer (Nequi app)<br/><b>DisputeRequest</b><br/>transaction_id, reason,<br/>claimed_amount, description"]
+    supervisor["🤖 Supervisor<br/>LLM + LangGraph<br/>decides which agent to ask"]
+    fraud["🤖 Fraud Agent<br/>LLM + tools"]
+    ledger["🤖 Ledger Agent<br/>LLM + tools"]
+    core[("🏦 Core Banking + Risk Engine<br/>plain API, no LLM")]
+    fa["<b>FraudAssessment</b><br/>risk_score, risk_level, signals"]
+    lr["<b>LedgerReconciliation</b><br/>settlement_status = failed<br/>debited / credited"]
+    verdict["🤖 Supervisor writes <b>DisputeVerdict</b><br/>decision = refund_recommended<br/>refund_amount<br/><i>recommendation only</i>"]
+    policy["⚙️ <b>refund_policy.evaluate()</b> - no LLM<br/>kill switch on<br/>same transaction everywhere<br/>ledger status = failed<br/>amount == ledger discrepancy<br/>fraud risk = low<br/>amount ≤ 100.000 COP<br/>≤ 3 auto refunds in 30 days<br/>≤ 200.000 COP total in 30 days"]
+    auto["✅ AUTO_APPROVED<br/>status: refund_approved<br/>the <b>ledger</b> amount is approved<br/>(not paid yet)"]
+    human["👤 HUMAN_REQUIRED<br/>status: pending_human_approval<br/>marked for review by a person"]
+
+    customer --> supervisor
+    supervisor --> fraud
+    supervisor --> ledger
+    fraud <-. "tool calls" .-> core
+    core <-. "tool calls" .-> ledger
+    fraud --> fa
+    ledger --> lr
+    fa --> verdict
+    lr --> verdict
+    verdict --> policy
+    policy -- "all checks pass" --> auto
+    policy -- "any check fails" --> human
+
+    classDef llm fill:#fff4e5,stroke:#e69500,color:#222
+    classDef det fill:#e8f4ff,stroke:#2b7bd6,color:#222
+    classDef data fill:#f4f4f4,stroke:#888,color:#222
+    classDef ok fill:#e7f7ec,stroke:#2e9b4f,color:#222
+    classDef review fill:#fdecec,stroke:#d0453f,color:#222
+    class supervisor,fraud,ledger,verdict llm
+    class core,policy det
+    class customer,fa,lr data
+    class auto ok
+    class human review
+```
+
+🟧 Orange = LLM (probabilistic: investigates and recommends) · 🟦 Blue = deterministic code (decides) ·
+⬜ Grey = validated Pydantic contracts ([field formats](shared/schemas.py))
+
+Limits are configuration (`AUTO_REFUND_*` env vars), with a kill switch `AUTO_REFUND_ENABLED=false`.
+
 ## Architecture
 
 ```mermaid
@@ -72,53 +122,66 @@ There is no "resolved": an approved refund is `refund_approved` until the ledger
 
 ## The supervisor graph
 
-The supervisor is a cycle: each agent reports back and the supervisor decides again. The model
-chooses the route; plain code bounds the loop and enforces which evidence is required
+The supervisor works in a loop: it asks one specialist for evidence, reads the answer, and
+decides again, until it has enough to write a verdict
 ([ADR-0013](docs/adr/0013-supervisor-graph-circuit-breakers-tracing.md)).
 
 ```mermaid
 flowchart TD
-    start(["POST /v1/disputes → 202<br/>JWT verified, duplicate check at the gate,<br/>ownership checked, dispute stored"])
-    supervisor["🤖 supervisor<br/>structured output: Route<br/>turns += 1"]
-    edge{"⚙️ conditional edge (code)<br/>breaker tripped?<br/>fraud assessment required?"}
-    ledger["ledger_agent<br/>ledger_calls += 1"]
-    fraud["fraud_agent<br/>fraud_calls += 1"]
-    verdict["🤖 write_verdict<br/>structured output: VerdictDraft"]
-    policy["⚙️ policy<br/>refund_policy.evaluate()"]
-    escalate["👤 escalate<br/>human operations"]
-    done(["Result stored on the dispute<br/>GET /v1/disputes/id<br/>+ steps + Langfuse trace URL"])
+    start(["Dispute accepted"])
+    supervisor["🤖 <b>1. Supervisor</b><br/>picks the next step"]
+    check{"⚙️ <b>2. Code checks the pick</b>"}
+    ledger["<b>Ledger Agent</b><br/>what does the ledger show?"]
+    fraud["<b>Fraud Agent</b><br/>how risky is it?"]
+    verdict["🤖 <b>3. Write the verdict</b><br/>a recommendation only"]
+    policy["⚙️ <b>4. Refund policy</b><br/>approve, or send to a person"]
+    person["👤 <b>A person takes over</b>"]
+    done(["Result stored on the dispute"])
 
-    start --> supervisor --> edge
-    edge -- "ledger_agent" --> ledger --> supervisor
-    edge -- "fraud_agent" --> fraud --> supervisor
-    edge -- "finish" --> verdict
-    edge -- "limit reached or invalid route" --> escalate
+    start --> supervisor --> check
+    check -- "get ledger facts" --> ledger
+    check -- "get a fraud assessment" --> fraud
+    ledger -- "report back" --> supervisor
+    fraud -- "report back" --> supervisor
+    check -- "enough evidence" --> verdict
+    check -- "a limit was reached" --> person
     verdict -- "refund recommended" --> policy --> done
-    verdict -- "no action / escalate fraud" --> done
-    verdict -- "no valid verdict" --> escalate
-    policy -- "refund history unavailable" --> escalate
-    escalate --> done
+    verdict -- "no refund, or fraud concern" --> done
+    person --> done
 
     classDef llm fill:#fff4e5,stroke:#e69500,color:#222
     classDef det fill:#e8f4ff,stroke:#2b7bd6,color:#222
     classDef data fill:#f4f4f4,stroke:#888,color:#222
     classDef review fill:#fdecec,stroke:#d0453f,color:#222
     class supervisor,verdict llm
-    class edge,policy,ledger,fraud det
+    class check,policy,ledger,fraud det
     class start,done data
-    class escalate review
+    class person review
 ```
 
-| Circuit breaker | Limit | Enforced by |
-|---|---|---|
-| Structured routing | `ledger_agent`, `fraud_agent`, or `finish` only | Schema |
-| Turn counter | 6 supervisor turns | Code (graph state) |
-| Per-agent counter | 2 calls each (one retry) | Code (graph state) |
-| Loop-breaking edge | Any tripped counter goes to `escalate` | Code |
-| `recursion_limit` | 15 graph steps | LangGraph, as a backstop |
+How to read it:
 
-Every run is traced to Langfuse Cloud: each routing decision, agent call, model input and output,
-latency, tokens, and cost.
+1. **The supervisor (a model) picks the next step.** It can only answer with one of three
+   values: ask the Ledger Agent, ask the Fraud Agent, or finish.
+2. **Code checks the pick before anything happens.** Code can overrule the model in two ways:
+   - If a limit was reached, a person takes over, whatever the model asked for.
+   - If the ledger shows money missing and the model tries to finish without a fraud
+     assessment, the dispute goes to the Fraud Agent anyway.
+3. **The verdict (a model) is a recommendation.** It cannot approve or pay anything.
+4. **The refund policy (code) decides** between automatic approval and review by a person.
+
+Anything that goes wrong along the way (an agent that stays down, an invalid answer, missing
+refund history) also ends with a person, never with a guess.
+
+| Limit that stops the loop | Value | Enforced by |
+|---|---|---|
+| Possible next steps | `ledger_agent`, `fraud_agent`, or `finish` only | The answer's schema |
+| Supervisor turns per dispute | 6 | Code, counting in the graph's state |
+| Calls to each agent | 2 (one retry) | Code, counting in the graph's state |
+| Total graph steps | 15 (`recursion_limit`) | LangGraph, as a backstop |
+
+Every run is traced to Langfuse Cloud: each routing decision, agent call, tool call, model input
+and output, latency, tokens, and cost.
 
 ## Why the AI cannot act as another customer
 
@@ -168,56 +231,6 @@ deterministic code. The model is configuration, so replacing it when it is retir
 newer models drop the temperature setting) is a config change gated by the evaluation set
 ([ADR-0010](docs/adr/0010-model-choice-and-determinism.md)).
 
-## How refunds are approved
-
-The AI agents investigate and **recommend**; they can never approve or move money.
-A deterministic policy (plain Python, no LLM) decides who approves, using facts from the
-core banking ledger and risk engine ([ADR-0007](docs/adr/0007-tiered-refund-approval.md)).
-
-```mermaid
-flowchart TD
-    customer["📱 Customer (Nequi app)<br/><b>DisputeRequest</b><br/>transaction_id, reason,<br/>claimed_amount, description"]
-    supervisor["🤖 Supervisor<br/>LLM + LangGraph<br/>decides which agent to ask"]
-    fraud["🤖 Fraud Agent<br/>LLM + tools"]
-    ledger["🤖 Ledger Agent<br/>LLM + tools"]
-    core[("🏦 Core Banking + Risk Engine<br/>plain API, no LLM")]
-    fa["<b>FraudAssessment</b><br/>risk_score, risk_level, signals"]
-    lr["<b>LedgerReconciliation</b><br/>settlement_status = failed<br/>debited / credited"]
-    verdict["🤖 Supervisor writes <b>DisputeVerdict</b><br/>decision = refund_recommended<br/>refund_amount<br/><i>recommendation only</i>"]
-    policy["⚙️ <b>refund_policy.evaluate()</b> - no LLM<br/>kill switch on<br/>same transaction everywhere<br/>ledger status = failed<br/>amount == ledger discrepancy<br/>fraud risk = low<br/>amount ≤ 100.000 COP<br/>≤ 3 auto refunds in 30 days<br/>≤ 200.000 COP total in 30 days"]
-    auto["✅ AUTO_APPROVED<br/>status: resolved<br/>pays the <b>ledger</b> amount"]
-    human["👤 HUMAN_REQUIRED<br/>status: pending_human_approval<br/>goes to review queue"]
-
-    customer --> supervisor
-    supervisor --> fraud
-    supervisor --> ledger
-    fraud <-. "tool calls" .-> core
-    core <-. "tool calls" .-> ledger
-    fraud --> fa
-    ledger --> lr
-    fa --> verdict
-    lr --> verdict
-    verdict --> policy
-    policy -- "all checks pass" --> auto
-    policy -- "any check fails" --> human
-
-    classDef llm fill:#fff4e5,stroke:#e69500,color:#222
-    classDef det fill:#e8f4ff,stroke:#2b7bd6,color:#222
-    classDef data fill:#f4f4f4,stroke:#888,color:#222
-    classDef ok fill:#e7f7ec,stroke:#2e9b4f,color:#222
-    classDef review fill:#fdecec,stroke:#d0453f,color:#222
-    class supervisor,fraud,ledger,verdict llm
-    class core,policy det
-    class customer,fa,lr data
-    class auto ok
-    class human review
-```
-
-🟧 Orange = LLM (probabilistic: investigates and recommends) · 🟦 Blue = deterministic code (decides) ·
-⬜ Grey = validated Pydantic contracts ([field formats](shared/schemas.py))
-
-Limits are configuration (`AUTO_REFUND_*` env vars), with a kill switch `AUTO_REFUND_ENABLED=false`.
-
 ## Two ways an agent gets its tools
 
 | | Fraud Agent | Ledger Agent |
@@ -241,15 +254,16 @@ The unit tests script the model; this measures it. `make eval-cluster` sends ten
 the system deployed on AKS and scores each run from its Langfuse trace
 ([ADR-0014](docs/adr/0014-evaluation-against-the-real-model.md)).
 
-| Metric | Latest run (commit `d91bceb`, gpt-4o 2024-11-20) |
+| Metric | Latest run (commit `15354ab`, gpt-4o 2024-11-20) |
 |---|---|
 | Task success (expected status, decision, policy route, and customer message) | 10 of 10 |
 | Tool calls correct (required calls made, nothing else looked up) | 100% |
 | Numeric groundedness (numbers the models wrote appear in the tool results) | 100% |
 | Agent calls that were retries | 0 |
-| Total spending for ten attempts | $0.1272 |
-| Cost per success | $0.0127 |
-| Latency, median / max | None |
+| Total spending for ten attempts | $0.1301 |
+| Cost per success | $0.0130 |
+| Time to accept a dispute (the `202`), median | None |
+| Time to result, median / max | None |
 
 The scenarios include a prompt injection, an attempt to dispute another customer's
 transaction, and a duplicate submission that must be answered from the gate at no model cost. Reports are kept in [`evals/results/`](evals/results/).

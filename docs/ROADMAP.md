@@ -69,8 +69,8 @@ Planned steps:
 - **Step 9 (done):** dispute store and deduplication key in the supervisor (`claim`,
   `complete`, `release`) on Redis, with tests for 10 simultaneous identical requests (ADR-0015).
 - **Step 10a (done, ADR-0016):** PostgreSQL dispute records, two separate statuses, `202
-  Accepted`, and a status endpoint; processing starts at once inside the supervisor.
-  Still to do: update the evaluation to submit and poll.
+  Accepted`, and a status endpoint; processing starts at once inside the supervisor. The
+  evaluation submits and polls: 10 of 10, accepted in about 0.3 s, result in about 9 s.
 - **Step 10b:** the queue and a separate worker, with a short-lived internal token issued by
   the supervisor on the customer's behalf (a customer's login token must not sit in a queue).
   Disputes are stored durably in **PostgreSQL** (a unique constraint on the dispute key; Redis
