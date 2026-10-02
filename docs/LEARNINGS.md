@@ -1,7 +1,11 @@
 # Learnings
 
-Things that went wrong while building this system, what caught them, and what changed.
-Each entry is a real event from this repository, not a hypothetical.
+- **Part 1** records things that went wrong while building this system, what caught them, and
+  what changed. Each entry is a real event from this repository.
+- **Part 2** holds design principles studied for the interview. They are reasoning and worked
+  scenarios, not events from this repository, and each says what the repository does today.
+
+# Part 1: what happened in this repository
 
 ## 1. The supervisor skipped required evidence (Milestone 5)
 
@@ -119,3 +123,55 @@ invented fields, empty body, timeout, refused connection) against both agents.
 
 **The lesson.** A circuit breaker you have not tested against a misbehaving dependency is a
 hope, not a control. "The agent is down" and "the agent is wrong" are different failures; test both.
+
+# Part 2: design principles (study notes)
+
+## A. Know when not to use an agent: the known-incident fast path
+
+> AI agents are for unstructured, ambiguous, case-by-case investigations. For known, structured
+> platform outages, a deterministic backend script will always be faster, cheaper, and safer
+> than an LLM agent.
+
+**The scenario.** An ATM network fails for 10 minutes at 6:00 PM. In that window 10,000
+customers try to withdraw cash: the money is debited, the bills never come out, and all 10,000
+open a dispute saying "the ATM ate my money".
+
+**Bad architecture: 10,000 independent agent runs.** Every dispute goes through the same
+multi-turn loop (read the text, call the ledger and fraud tools, reason) to reach a conclusion
+the platform already knows. Using this repository's measured figures for one triage
+(8 model calls, about 5,700 tokens, about $0.019, 5-15 seconds):
+
+| For 10,000 disputes | Agents for every dispute |
+|---|---|
+| Model calls | about 80,000 |
+| Inference cost | about $190 |
+| Throughput | at this deployment's 30,000 tokens per minute, about 5 triages a minute: more than 30 hours |
+| Wrong outcomes | a model error rate of even 1-2% is 100-200 customers wrongly delayed or refused |
+
+The bill is not the main problem. Throughput and errors are: the model deployment's rate limit
+turns an outage into a day-long backlog, and each run is one more chance to be wrong about a
+fact the database already holds.
+
+**Good architecture: the deterministic gate overrides the agents.**
+1. *The system detects the incident.* The ledger shows thousands of failures with the same
+   machine code (for example `ATM_DISPENSER_TIMEOUT`) from the same ATM cluster in the same
+   10 minutes.
+2. *A batch rule is created:* "any transaction from ATM cluster X between 6:00 PM and 6:10 PM
+   is a verified hardware failure". A person in operations approves the rule, once.
+3. *The agents are bypassed.* A new dispute reaches the safety gate first. The gate checks the
+   transaction against the known-incident list, finds a match, and calls no model. A backend
+   job refunds the affected transactions in a batch, under the database's ACID guarantees and
+   with an idempotency key per transaction so nobody is paid twice.
+
+Customers who never file a dispute are refunded too, because the rule covers the transactions,
+not the complaints.
+
+**Why interviewers care.** At 28 million users, they want to see that you know when *not* to
+use AI. The order of preference is: a database fact, then a deterministic rule, then an agent
+for what remains ambiguous.
+
+**What this repository does today.** Every dispute goes through the supervisor and the agents;
+there is no known-incident fast path. The pieces it would build on exist: the refund policy is
+already deterministic code (ADR-0007), and Milestone 6 adds the safety gate, the queue, and the
+idempotent refund execution that a batch refund needs. A fast path would be one more check at
+that gate, before the queue.
