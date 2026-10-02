@@ -76,6 +76,13 @@ class FakeSpecialists:
             raise SpecialistUnavailable("HTTP 503 from core systems")
         return self.history
 
+    async def find_refund(self, user_id, transaction_id):
+        if self.pay != "batch_paid_first":
+            return None
+        return RefundPayment(refund_id="RF-batch000000001", amount=self.ledger.discrepancy, currency="COP",
+                             executed_at=datetime.now(UTC),
+                             idempotency_key=f"incident:INC-20261001-01:{transaction_id}")
+
     async def known_incident(self, caller, transaction_id):
         self.direct_reads.append("incident")
         return self.incident
@@ -94,6 +101,8 @@ class FakeSpecialists:
             raise SpecialistUnavailable("ConnectTimeout calling the ledger")
         if self.pay == "refused":
             raise RefundRefused("amount_mismatch", "the ledger shows 49000.00 owed, not 50000.00")
+        if self.pay == "batch_paid_first":  # the incident's batch job refunded it a moment ago
+            raise RefundRefused("already_refunded", "this transaction was already refunded")
         if idempotency_key not in self.paid:  # the same key returns the same refund
             self.paid[idempotency_key] = RefundPayment(
                 refund_id=f"RF-{len(self.paid) + 1:016d}", amount=amount, currency="COP",
@@ -485,3 +494,14 @@ def test_a_dispute_no_incident_covers_goes_through_the_agents():
     assert specialists.direct_reads == ["incident"]  # checked, not covered
     assert len(model.seen) == len(HAPPY) and specialists.ledger_calls == specialists.fraud_calls == 1
     assert outcome.json()["incident"] is None
+
+
+def test_a_dispute_the_batch_already_paid_is_recorded_as_paid_not_sent_to_a_person():
+    outcome, _, specialists = triage([], covered(pay="batch_paid_first"))
+    body = outcome.json()
+
+    assert outcome.view["status"] == "refund_paid"
+    assert body["payment"]["refund_id"] == "RF-batch000000001"  # the batch's refund, not a new one
+    assert body["payment"]["idempotency_key"].startswith("incident:")
+    assert body["steps"][-1].startswith("pay: 50000.00 COP already refunded as RF-batch")
+    assert body["escalation_reason"] is None

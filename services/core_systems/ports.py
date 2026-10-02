@@ -26,12 +26,21 @@ class IdempotencyConflict(Exception):
     """The idempotency key was already used for a different refund."""
 
 
+# Refunds paid by an incident's batch job (ADR-0022) carry keys with this prefix. They were not
+# claimed by the customer, so they do not count towards the customer's automatic-refund limits.
+INCIDENT_KEY_PREFIX = "incident:"
+
+
 class LedgerRepository(Protocol):
     async def get_transaction(self, customer_id: str, transaction_id: str) -> Transaction | None:
         """The customer's transaction, or None if it does not exist or belongs to someone else."""
 
     async def get_refund_history(self, customer_id: str, window_days: int) -> RefundHistory:
-        """Automatic refunds granted to the customer within the last `window_days`."""
+        """Automatic refunds granted to the customer within the last `window_days`. Incident
+        refunds (INCIDENT_KEY_PREFIX) are not counted: the customer did not claim them."""
+
+    async def get_refund(self, customer_id: str, transaction_id: str) -> Refund | None:
+        """The refund already paid for this customer's transaction, or None."""
 
     async def execute_refund(
         self, customer_id: str, transaction_id: str, amount: Decimal, idempotency_key: str

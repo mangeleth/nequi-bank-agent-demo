@@ -35,6 +35,18 @@ async def get_refund_history(
     return await ledger.get_refund_history(customer_id, window_days)
 
 
+@router.get("/transactions/{transaction_id}/refund", response_model=Refund)
+async def get_transaction_refund(
+    transaction_id: Annotated[TransactionId, Path()], customer_id: CallerCustomerId, ledger: Ledger
+) -> Refund:
+    """The refund already paid for the caller's transaction, whoever paid it (a dispute or an
+    incident's batch job). 404 if none, or if the transaction is not the caller's."""
+    refund = await ledger.get_refund(customer_id, transaction_id)
+    if refund is None:
+        raise HTTPException(status_code=404, detail="no refund for this transaction")
+    return refund
+
+
 IdempotencyKey = Annotated[str, Header(alias="Idempotency-Key", pattern=r"^[A-Za-z0-9:_-]{16,128}$")]
 
 

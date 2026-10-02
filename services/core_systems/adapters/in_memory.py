@@ -13,7 +13,7 @@ from decimal import Decimal
 
 from services.core_systems.adapters.fixtures import AUTO_REFUNDS, INCIDENTS, RISK_SIGNALS, TRANSACTIONS
 from services.core_systems.models import Incident, Refund, RefundHistory, RiskSignals, Transaction
-from services.core_systems.ports import IdempotencyConflict, RefundRejected
+from services.core_systems.ports import INCIDENT_KEY_PREFIX, IdempotencyConflict, RefundRejected
 from shared.schemas import SettlementStatus
 
 
@@ -50,6 +50,12 @@ class InMemoryLedger:
             auto_refund_count=len(recent),
             auto_refund_total=sum(recent, Decimal("0.00")),
         )
+
+    async def get_refund(self, customer_id: str, transaction_id: str) -> Refund | None:
+        for refund in self._refunds_by_key.values():
+            if (refund.customer_id, refund.transaction_id) == (customer_id, transaction_id):
+                return refund
+        return None
 
     async def incident_for(self, customer_id: str, transaction_id: str) -> Incident | None:
         tx = self._transactions.get(transaction_id)
@@ -100,7 +106,8 @@ class InMemoryLedger:
             )
             row["settlement_status"] = SettlementStatus.REVERSED
             row["credited_amount"] = row["debited_amount"]  # the amount is back with the customer
-            self._refund_history.setdefault(customer_id, []).append((refund.executed_at, amount))
+            if not idempotency_key.startswith(INCIDENT_KEY_PREFIX):  # the customer did not claim it
+                self._refund_history.setdefault(customer_id, []).append((refund.executed_at, amount))
             self._refunds_by_key[idempotency_key] = refund
             return refund, False
 

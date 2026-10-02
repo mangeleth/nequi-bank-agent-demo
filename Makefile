@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: test-db test-servicebus venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster failure-tests failure-test-kill redis-image postgres-image postgres-password ledger-password ledger-db signing-key signing-grant signing-key-publish servicebus-create sb-grant demo-reset test guard-clean validate build push deploy smoke release
+.PHONY: test-db test-servicebus venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster failure-tests failure-test-kill redis-image postgres-image postgres-password ledger-password ledger-db incident-refunds signing-key signing-grant signing-key-publish servicebus-create sb-grant demo-reset test guard-clean validate build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -295,6 +295,14 @@ sb-grant:
 		--assignee-principal-type ServicePrincipal \
 		--role "Azure Service Bus Data $(SB_ROLE)" \
 		--scope $$(az servicebus queue show -g $(AKS_RESOURCE_GROUP) --namespace-name $(SERVICEBUS_NAMESPACE) -n $(SB_QUEUE) --query id -o tsv)
+
+## Refund every transaction a confirmed incident covers (ADR-0022), run inside a Core Systems pod.
+## A dry run unless EXECUTE=true:  make incident-refunds INCIDENT=INC-20261001-01 [EXECUTE=true]
+INCIDENT ?= INC-20261001-01
+MAX_TOTAL ?= 1000000.00
+incident-refunds:
+	kubectl exec -n $(K8S_NAMESPACE) deploy/core-systems -- python -m services.core_systems.incident_refunds \
+		$(INCIDENT) --max-total $(MAX_TOTAL) $(if $(filter true,$(EXECUTE)),--execute,)
 
 ## Forget every dispute: gate keys in Redis and records in PostgreSQL (demo and evaluation only)
 demo-reset:

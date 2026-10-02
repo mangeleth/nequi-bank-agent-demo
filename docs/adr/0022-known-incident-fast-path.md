@@ -1,6 +1,6 @@
 # ADR-0022: Disputes covered by a confirmed incident are decided by code, without a model
 
-- **Status:** In progress (parts 1 and 2 of 4: the registry and the check)
+- **Status:** In progress (parts 1-3 of 4: the registry, the check, the batch refund)
 - **Date:** 2026-10-02
 - **Milestone:** M6 (Step 12)
 
@@ -52,8 +52,23 @@ deterministic rule, then an agent for what remains ambiguous.
 - If Core Systems does not answer the incident check, the delivery is retried. An outage is never
   read as "not covered", which would quietly spend model calls during an incident.
 
+- **The batch refund** (`services/core_systems/incident_refunds.py`, `make incident-refunds`)
+  pays every covered transaction, including those of customers who never disputed:
+  - a **dry run by default**: it prints the plan; `--execute` (`EXECUTE=true`) pays
+  - each refund goes through the ledger's own `execute_refund()`, with the same rules as any
+    refund; the key is `incident:<incident>:<transaction>`, so running it again pays nothing more
+  - `--max-total` refuses the whole run if the plan exceeds it, so a wrong window cannot
+    quietly pay out a fortune
+  - incident refunds do not count towards the customer's automatic-refund limits: the customer
+    did not claim them
+- **A dispute and the batch at the same moment pay once.** Their keys differ, so the key cannot
+  help; the ledger's state does (the row is locked while the rules are checked, and one refund per
+  transaction is a database constraint). A test races the two.
+- **A dispute the batch already paid is recorded as paid.** The payer gets `already_refunded`,
+  looks up the refund that exists (`GET /v1/core-banking/transactions/{id}/refund`), and records
+  the dispute as `refund_paid` with it, instead of sending a paid customer to a person.
+
 ## Still to do
-3. The batch refund job for every covered transaction, including undisputed ones.
 4. An evaluation scenario proving zero model calls, and the deploy.
 
 ## Production delta

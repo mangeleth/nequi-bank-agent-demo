@@ -176,3 +176,17 @@ async def test_core_systems_down_during_the_incident_check_is_unavailable_not_un
     client = specialists(lambda request: httpx.Response(503, text="down"))
     with pytest.raises(SpecialistUnavailable):
         await client.known_incident(CALLER, DISPUTE.transaction_id)
+
+
+async def test_find_refund_reads_a_refund_paid_by_another_route_from_the_real_ledger(monkeypatch):
+    monkeypatch.setenv("CORE_SYSTEMS_BACKEND", "in_memory")
+    core_app, client = real_core_specialists()
+    async with core_app.router.lifespan_context(core_app):
+        assert await client.find_refund("user-1003", "TX-20261001000010") is None
+        await core_app.state.ledger.execute_refund("user-1003", "TX-20261001000010", Decimal("60000.00"),
+                                                   "incident:INC-20261001-01:TX-20261001000010")
+        found = await client.find_refund("user-1003", "TX-20261001000010")
+        someone_else = await client.find_refund("user-1002", "TX-20261001000010")
+
+    assert (found.amount, found.idempotency_key) == (Decimal("60000.00"), "incident:INC-20261001-01:TX-20261001000010")
+    assert someone_else is None  # scoped to the customer

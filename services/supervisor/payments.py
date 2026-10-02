@@ -60,19 +60,30 @@ async def pay_approved(store: DisputeStore, specialists: Specialists, record: Di
     try:
         payment = await specialists.pay_refund(record.user_id, record.transaction_id, approval.approved_amount, key)
     except RefundRefused as refused:
+        if refused.code == "already_refunded":
+            # Paid by another route a moment ago, e.g. the incident's batch job (ADR-0022). The
+            # customer has their money: record that refund, do not send a paid customer to a person.
+            existing = await specialists.find_refund(record.user_id, record.transaction_id)
+            if existing is not None and existing.amount == approval.approved_amount:
+                await _record_paid(store, record, result, existing, how="already refunded")
+                return
         log.warning("the ledger refused the refund for dispute %s: %s", record.dispute_id, refused)
         await to_a_person(store, record, reason=f"the ledger refused the approved refund: {refused}",
                           step=f"pay: refused by the ledger ({refused.code}) -> a person",
                           note=f"refund refused by the ledger: {refused.code}")
         return
+    await _record_paid(store, record, result, payment, how="paid")
+
+
+async def _record_paid(store: DisputeStore, record: DisputeRecord, result: TriageResult, payment, *, how: str) -> None:
     settled = result.model_copy(update={
         "status": DisputeStatus.REFUND_PAID,
         "payment": payment,
         "customer_message": _with_incident(result, paid_message(result.ledger, payment)),
-        "steps": [*result.steps, f"pay: {payment.amount} {payment.currency} paid as {payment.refund_id}"],
+        "steps": [*result.steps, f"pay: {payment.amount} {payment.currency} {how} as {payment.refund_id}"],
     })
     await store.settle(record.dispute_id, expected=DisputeStatus.REFUND_APPROVED, result=settled,
-                       note=f"refund paid: {payment.refund_id}")
+                       note=f"refund {how}: {payment.refund_id}")
 
 
 async def to_a_person(store: DisputeStore, record: DisputeRecord, *, reason: str, step: str, note: str) -> None:

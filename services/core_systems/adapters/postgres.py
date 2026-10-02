@@ -21,7 +21,7 @@ from pathlib import Path
 
 from services.core_systems.adapters.fixtures import AUTO_REFUNDS, INCIDENTS, TRANSACTIONS
 from services.core_systems.models import Incident, Refund, RefundHistory, Transaction
-from services.core_systems.ports import IdempotencyConflict, RefundRejected
+from services.core_systems.ports import INCIDENT_KEY_PREFIX, IdempotencyConflict, RefundRejected
 from shared.schemas import SettlementStatus
 
 SCHEMA = """
@@ -131,11 +131,20 @@ class PostgresLedger:
         async with self._pool.connection() as conn:
             cursor = await conn.execute(
                 "SELECT count(*) AS count, coalesce(sum(amount), 0) AS total FROM ledger_refunds "
-                "WHERE customer_id = %s AND executed_at >= now() - make_interval(days => %s)",
-                (customer_id, window_days))
+                "WHERE customer_id = %s AND executed_at >= now() - make_interval(days => %s) "
+                "AND idempotency_key NOT LIKE %s",  # incident refunds were not claimed by the customer
+                (customer_id, window_days, INCIDENT_KEY_PREFIX + "%"))
             row = await cursor.fetchone()
         return RefundHistory(customer_id=customer_id, window_days=window_days,
                              auto_refund_count=row["count"], auto_refund_total=Decimal(row["total"]).quantize(Decimal("0.01")))
+
+    async def get_refund(self, customer_id: str, transaction_id: str) -> Refund | None:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                f"SELECT {_REFUND_COLUMNS} FROM ledger_refunds WHERE customer_id = %s AND transaction_id = %s",
+                (customer_id, transaction_id))
+            row = await cursor.fetchone()
+        return Refund(**row) if row else None
 
     async def incident_for(self, customer_id: str, transaction_id: str) -> Incident | None:
         columns = ", ".join(f"i.{c.strip()}" for c in _INCIDENT_COLUMNS.split(","))

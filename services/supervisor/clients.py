@@ -7,6 +7,7 @@ The customer's token is forwarded to each agent, and each agent verifies it agai
 no service trusts another service's word about who the customer is.
 """
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Protocol
 
@@ -84,6 +85,9 @@ class Specialists(Protocol):
 
     async def risk_engine(self, caller: CallerIdentity, transaction_id: str) -> FraudAssessment:
         """The risk engine's own score, read directly by code: no agent, no model."""
+
+    async def find_refund(self, user_id: str, transaction_id: str) -> RefundPayment | None:
+        """The refund already paid for this transaction, by any route (e.g. an incident batch)."""
 
     async def pay_refund(
         self, user_id: str, transaction_id: str, amount: Decimal, idempotency_key: str
@@ -204,6 +208,18 @@ class HttpSpecialists:
                                    rationale="The risk engine's own score, read by code; no model interpreted it.")
         except (KeyError, TypeError, ValueError, ValidationError) as exc:
             raise SpecialistUnavailable("malformed risk signals from core systems") from exc
+
+    async def find_refund(self, user_id: str, transaction_id: str) -> RefundPayment | None:
+        caller = CallerIdentity(user_id=user_id, token_id="refund-lookup", expires_at=datetime.now(UTC))
+        body = await self._core_json(caller, f"/v1/core-banking/transactions/{transaction_id}/refund")
+        if body is None:
+            return None
+        try:
+            if body["transaction_id"] != transaction_id:
+                raise SpecialistUnavailable("the ledger returned a refund for another transaction")
+            return RefundPayment.model_validate({f: body[f] for f in RefundPayment.model_fields})
+        except (KeyError, TypeError, ValidationError) as exc:
+            raise SpecialistUnavailable("malformed refund from the ledger") from exc
 
     async def pay_refund(
         self, user_id: str, transaction_id: str, amount: Decimal, idempotency_key: str
