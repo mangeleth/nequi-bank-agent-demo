@@ -254,7 +254,8 @@ deployed system and reports total spending, successes, agent retries, cost per r
 per success (ADR-0014). With one run per scenario and no failures this shows the mechanism; it
 is not yet a measured error rate. Comparing retry policies is not possible yet: the retry limit
 is a constant in code, and without failures the two policies would score the same. That needs a
-configurable limit and deliberately injected failures (tracked as a GitHub issue).
+configurable limit and deliberately injected failures
+([#9](https://github.com/mangeleth/nequi-bank-agent-demo/issues/9)).
 
 ## C. What to do when the evidence is not enough
 
@@ -278,9 +279,9 @@ Still unresolved?
 | Missing: retrieve it | Yes | The supervisor loops back to an agent; code forces the fraud assessment when a refund is possible; a failed agent is called once more. Finishing without ledger evidence is refused. |
 | Conflicting, by **authority** | Yes | The system of record outranks every other source. Customer says "failed", ledger says "settled": no action. Model's figures differ from the ledger: rejected. Recommended refund differs from the ledger's discrepancy: sent to a person. Model says "no action" while the ledger shows money missing: sent to a person. |
 | Conflicting, by **identity** | Yes | Identity comes only from the verified token; "I am user-1002" in the text changes nothing. Evidence that refers to different transactions fails the policy's `same_transaction` check. |
-| Conflicting, by **timing** | **No** | Nothing checks how fresh the evidence is. A transfer that moves from pending to settled between the lookup and the decision would be judged on the stale reading. There is also no rule about how old a transaction may be to dispute. |
-| Customer's claimed amount differs from the ledger | **Partly** | The policy pays the ledger's figure whatever was claimed, so the money is right, but no test or scenario exercises the mismatch and nothing reports it to a reviewer. |
-| Still unresolved: state what is known and what is uncertain | **Partly** | The customer message states only established facts and leaves out what is not known (entry D). The result still does not list what remains *uncertain* for a reviewer. |
+| Conflicting, by **timing** ([#6](https://github.com/mangeleth/nequi-bank-agent-demo/issues/6)) | **No** | Nothing checks how fresh the evidence is. A transfer that moves from pending to settled between the lookup and the decision would be judged on the stale reading. There is also no rule about how old a transaction may be to dispute. |
+| Customer's claimed amount differs from the ledger ([#7](https://github.com/mangeleth/nequi-bank-agent-demo/issues/7)) | **Partly** | The policy pays the ledger's figure whatever was claimed, so the money is right, but no test or scenario exercises the mismatch and nothing reports it to a reviewer. |
+| Still unresolved: state what is known and what is uncertain ([#8](https://github.com/mangeleth/nequi-bank-agent-demo/issues/8)) | **Partly** | The customer message states only established facts and leaves out what is not known (entry D). The result still does not list what remains *uncertain* for a reviewer. |
 | Escalate when policy demands it | Yes | Policy limits send refunds to a person; high fraud risk goes to fraud operations; every breaker and failure ends in the `escalate` node. |
 
 ## D. Say only what has been established
