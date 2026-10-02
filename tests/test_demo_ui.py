@@ -229,3 +229,13 @@ def test_the_chosen_transfer_stays_chosen_across_reruns(monkeypatch):
         page.run()  # another rerun, as any click causes
         assert page.selectbox(key="tx-A-user-1001").value == tx_id
         assert any(c.value.startswith(story) for c in page.caption)
+
+
+def test_a_trace_still_arriving_is_detected_from_the_disputes_steps():
+    steps = ["supervisor -> ledger_agent: evidence first", "ledger_agent: ok",
+             "supervisor -> fraud_agent: then risk", "fraud_agent: ok", "verdict: refund_recommended"]
+    only_ledger = TRACE  # has the ledger-agent service, not the fraud-agent one
+    assert logic.missing_from_trace(only_ledger, steps) == ["fraud-agent"]
+    complete = TRACE + [_obs("svc2", "fraud-agent", "AGENT", "20.100", "21.000", "root")]
+    assert logic.missing_from_trace(complete, steps) == []
+    assert logic.missing_from_trace([], ["incident: covered", "verdict: no_action"]) == []

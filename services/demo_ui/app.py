@@ -39,7 +39,7 @@ def langfuse() -> logic.LangfuseReader | None:
 TYPE_COLOURS = {"GENERATION": "#DA0081", "TOOL": "#5A9EFB", "AGENT": "#200020", "CHAIN": "#B9A6D6"}
 
 
-def show_trace(dispute_id: str, trace_url: str) -> None:
+def show_trace(dispute_id: str, trace_url: str, steps: list[str]) -> None:
     """The run's trace, drawn inside the demo from Langfuse's API (ADR-0025)."""
     reader = langfuse()
     if reader is None:
@@ -56,14 +56,18 @@ def show_trace(dispute_id: str, trace_url: str) -> None:
     if not observations:
         st.warning("The trace is still arriving in Langfuse (it is sent asynchronously). Read it again in a few seconds.")
         return
+    if missing := logic.missing_from_trace(observations, steps):
+        st.warning(f"Still arriving in Langfuse: the part of the trace sent by {', '.join(missing)}. "
+                   "The numbers below are incomplete; read the trace again in a few seconds.")
     everything = st.toggle("Include LangChain's internal steps", key=f"all-{key}")
     view = logic.trace_view(observations, include_internal=everything)
-    cols = st.columns(5)
-    cols[0].metric("Model calls", view.model_calls)
-    cols[1].metric("Tool calls", view.tool_calls)
-    cols[2].metric("Tokens", f"{view.tokens:,}")
-    cols[3].metric("Model cost", f"${view.cost_usd:.4f}")
-    cols[4].metric("Duration", f"{view.duration_s:.1f} s")
+    top = st.columns(3)
+    top[0].metric("Model calls", view.model_calls)
+    top[1].metric("Tool calls", view.tool_calls)
+    top[2].metric("Tokens", f"{view.tokens:,}")
+    bottom = st.columns(3)
+    bottom[0].metric("Model cost", f"${view.cost_usd:.4f}")
+    bottom[1].metric("Duration", f"{view.duration_s:.1f} s")
 
     import altair as alt
 
@@ -72,12 +76,12 @@ def show_trace(dispute_id: str, trace_url: str) -> None:
                               "type": r["type"], "tokens": r["tokens"], "cost": r["cost_usd"]}
                              for i, r in enumerate(view.rows)])
     chart = alt.Chart(timeline).mark_bar(cornerRadius=4).encode(
-        y=alt.Y("step:N", sort=None, title=None, axis=alt.Axis(labelLimit=420)),
+        y=alt.Y("step:N", sort=None, title=None, axis=alt.Axis(labelLimit=420, labelOverlap=False)),
         x=alt.X("start:Q", title="milliseconds since the run started"), x2="end:Q",
         color=alt.Color("type:N", scale=alt.Scale(domain=list(TYPE_COLOURS), range=list(TYPE_COLOURS.values())),
                         legend=alt.Legend(title=None, orient="top")),
         tooltip=["step", "type", "start", "end", "tokens", "cost"],
-    ).properties(height=max(160, 24 * len(timeline)))
+    ).properties(height=max(180, 30 * len(timeline)))
     st.altair_chart(chart, width="stretch")
     if view.hidden:
         st.caption(f"{view.hidden} internal LangChain steps hidden. Totals count every model call.")
@@ -132,7 +136,7 @@ def show_outcome(view: dict, progress_lines: list[str]) -> None:
         st.code("\n".join(outcome.steps) or "(none)", language=None)
     if outcome.trace_url:
         with st.expander("🔍 The trace: every step of this run", expanded=True):
-            show_trace(view["dispute_id"], outcome.trace_url)
+            show_trace(view["dispute_id"], outcome.trace_url, outcome.steps)
     elif outcome.path == "incident":
         st.caption("No trace: no model ran.")
 

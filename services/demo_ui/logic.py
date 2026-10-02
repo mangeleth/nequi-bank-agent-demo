@@ -371,3 +371,17 @@ def trace_view(observations: list[dict], include_internal: bool = False) -> Trac
         duration_s=round((max(ends) - origin).total_seconds(), 1) if ends and origin else 0.0,
         hidden=len(observations) - len(shown),
     )
+
+
+# Graph steps that call an agent service, and the name that service's part of the trace has.
+_AGENT_SERVICES = {"ledger_agent": "ledger-agent", "fraud_agent": "fraud-agent"}
+
+
+def missing_from_trace(observations: list[dict], steps: list[str]) -> list[str]:
+    """Agent services the dispute's steps say ran, but whose part of the trace has not arrived
+    yet. Each service sends its part separately and Langfuse ingests asynchronously, so a trace
+    read early is silently partial (LEARNINGS entry 8): say so instead of showing it as complete."""
+    ran = {_AGENT_SERVICES[node] for step in steps
+           for node in [step.split(":")[0].split(" ->")[0].strip()] if node in _AGENT_SERVICES}
+    arrived = {o.get("name") for o in observations if o.get("type") == "AGENT"}
+    return sorted(ran - arrived)
