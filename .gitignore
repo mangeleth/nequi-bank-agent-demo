@@ -4,3 +4,6 @@ __pycache__/
 .venv/
 .local/
 evals/results/*.json
+
+# People's labels exported from the running system: reviewed first, then moved into calibration.json
+evals/judge/production_labels.json
