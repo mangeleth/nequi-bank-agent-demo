@@ -14,6 +14,8 @@ RUN pip install -r services/demo_ui/requirements.txt
 
 COPY services/__init__.py services/__init__.py
 COPY services/demo_ui/ services/demo_ui/
+# The theme (ADR-0025): Streamlit reads .streamlit/config.toml from the working directory
+COPY .streamlit/config.toml .streamlit/config.toml
 # The dashboard and the demo script tab read these. They are baked in at build time, so the
 # dashboard shows the evaluation runs committed when the image was built (ADR-0023).
 COPY evals/results/ evals/results/

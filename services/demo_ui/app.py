@@ -18,7 +18,7 @@ RESULTS_DIR = Path(os.environ.get("EVAL_RESULTS_DIR", "evals/results"))
 DEMO_SCRIPT = Path(os.environ.get("DEMO_SCRIPT_FILE", "docs/DEMO_SCRIPT.md"))
 POLL_SECONDS, FOLLOW_SECONDS = 0.5, 120
 
-st.set_page_config(page_title="Nequi dispute triage demo", page_icon="🏦", layout="wide")
+st.set_page_config(page_title="AI dispute triage demo", page_icon="💸", layout="wide")
 
 
 @st.cache_resource
@@ -29,6 +29,68 @@ def intake() -> logic.IntakeClient:
 @st.cache_resource
 def login_settings() -> logic.LoginSettings:
     return logic.LoginSettings.from_env()
+
+
+@st.cache_resource
+def langfuse() -> logic.LangfuseReader | None:
+    return logic.LangfuseReader.from_env()
+
+
+TYPE_COLOURS = {"GENERATION": "#DA0081", "TOOL": "#5A9EFB", "AGENT": "#200020", "CHAIN": "#B9A6D6"}
+
+
+def show_trace(dispute_id: str, trace_url: str) -> None:
+    """The run's trace, drawn inside the demo from Langfuse's API (ADR-0025)."""
+    reader = langfuse()
+    if reader is None:
+        st.link_button("Open the Langfuse trace", trace_url)
+        return
+    key = f"trace-{dispute_id}"
+    if st.button("🔍 Show the trace" if key not in st.session_state else "↻ Read the trace again", key=f"btn-{key}"):
+        st.session_state[key] = reader.observations(logic.trace_id_from_url(trace_url))
+    observations = st.session_state.get(key)
+    if observations is None:
+        st.caption("Every step of the run, read from Langfuse: who decided what, which tools were called, "
+                   "time, tokens, and cost.")
+        return
+    if not observations:
+        st.warning("The trace is still arriving in Langfuse (it is sent asynchronously). Read it again in a few seconds.")
+        return
+    everything = st.toggle("Include LangChain's internal steps", key=f"all-{key}")
+    view = logic.trace_view(observations, include_internal=everything)
+    cols = st.columns(5)
+    cols[0].metric("Model calls", view.model_calls)
+    cols[1].metric("Tool calls", view.tool_calls)
+    cols[2].metric("Tokens", f"{view.tokens:,}")
+    cols[3].metric("Model cost", f"${view.cost_usd:.4f}")
+    cols[4].metric("Duration", f"{view.duration_s:.1f} s")
+
+    import altair as alt
+
+    timeline = pd.DataFrame([{"step": f"{i:02d} " + "  " * r["depth"] + r["label"], "start": r["start_ms"],
+                              "end": r["end_ms"] if r["end_ms"] is not None else r["start_ms"] + 1,
+                              "type": r["type"], "tokens": r["tokens"], "cost": r["cost_usd"]}
+                             for i, r in enumerate(view.rows)])
+    chart = alt.Chart(timeline).mark_bar(cornerRadius=4).encode(
+        y=alt.Y("step:N", sort=None, title=None, axis=alt.Axis(labelLimit=420)),
+        x=alt.X("start:Q", title="milliseconds since the run started"), x2="end:Q",
+        color=alt.Color("type:N", scale=alt.Scale(domain=list(TYPE_COLOURS), range=list(TYPE_COLOURS.values())),
+                        legend=alt.Legend(title=None, orient="top")),
+        tooltip=["step", "type", "start", "end", "tokens", "cost"],
+    ).properties(height=max(160, 24 * len(timeline)))
+    st.altair_chart(chart, width="stretch")
+    if view.hidden:
+        st.caption(f"{view.hidden} internal LangChain steps hidden. Totals count every model call.")
+
+    labels = [f"{i:02d} {r['label']}" for i, r in enumerate(view.rows)]
+    chosen = st.selectbox("Look inside a step: what went in and what came out", labels, key=f"step-{key}")
+    row = view.rows[labels.index(chosen)]
+    left, right = st.columns(2)
+    left.markdown("**Input**")
+    left.code(str(row["input"] or "")[:4000], language="json", wrap_lines=True)
+    right.markdown("**Output**")
+    right.code(str(row["output"] or "")[:4000], language="json", wrap_lines=True)
+    st.link_button("Open in Langfuse", trace_url)
 
 
 # --- 1. The customer's app ----------------------------------------------------------------------
@@ -65,7 +127,8 @@ def show_outcome(view: dict, progress_lines: list[str]) -> None:
     with st.expander("Steps taken"):
         st.code("\n".join(outcome.steps) or "(none)", language=None)
     if outcome.trace_url:
-        st.link_button("Open the Langfuse trace", outcome.trace_url)
+        with st.expander("🔍 The trace: every step of this run", expanded=True):
+            show_trace(view["dispute_id"], outcome.trace_url)
     elif outcome.path == "incident":
         st.caption("No trace: no model ran.")
 
@@ -175,10 +238,19 @@ def script_tab() -> None:
         st.info("docs/DEMO_SCRIPT.md is not in this image.")
 
 
-st.title("🏦 Nequi dispute triage")
-st.caption("A multi-agent dispute system on AKS. Synthetic customers and data only.")
-st.info("Public demo with synthetic data. Each customer and transfer is investigated once until the demo "
-        "is reset; submitting it again shows the existing dispute, at no cost.", icon="ℹ️")
+HEADER = """
+<div style="background:#200020;border-radius:1.25rem;padding:1.4rem 1.6rem;margin-bottom:0.8rem">
+  <div style="color:#DA0081;font-weight:800;letter-spacing:.08em;font-size:.8rem">AI DISPUTE TRIAGE · LIVE DEMO</div>
+  <div style="color:#FFFFFF;font-weight:800;font-size:1.9rem;line-height:1.2;margin:.3rem 0">
+    Your money didn't arrive? <span style="color:#DA0081">We check, decide, and pay back.</span></div>
+  <div style="color:#ECE7F5;font-size:.95rem">Three AI agents investigate on Azure Kubernetes; code approves
+    and pays, exactly once. Built for a Nequi interview.</div>
+</div>
+"""
+st.markdown(HEADER, unsafe_allow_html=True)
+st.caption("Independent interview demo, not a Nequi product and not affiliated with Nequi. Synthetic customers "
+           "and data only; never enter real personal or banking details. Each customer and transfer is "
+           "investigated once until the demo is reset; submitting it again shows the existing dispute, at no cost.")
 customer, dashboard, script = st.tabs(["📱 Customer app", "📊 Evaluation dashboard", "🗺️ Demo script"])
 with customer:
     customer_tab()

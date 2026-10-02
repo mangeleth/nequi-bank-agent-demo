@@ -233,3 +233,136 @@ def latest_scenarios(results_dir: Path) -> list[dict]:
              "model calls": (r.get("actual") or {}).get("model_calls"),
              "result (s)": round(r["latency_ms"] / 1000, 1), "cost ($)": round(r.get("cost_usd") or 0, 4),
              "outcome": (r.get("actual") or {}).get("status")} for r in results]
+
+
+# --- The trace, shown inside the demo (read from Langfuse) ---------------------------------------
+#
+# Each run is traced to Langfuse (ADR-0013). Instead of sending the viewer to Langfuse, the UI
+# reads the trace's observations from Langfuse's public API and draws them. A trace is ingested
+# asynchronously, so a trace read seconds after the run can still be arriving: the UI says so and
+# offers to read it again.
+
+# LangChain internals: true but noisy. Hidden unless the viewer asks for every step.
+_INTERNAL = ("ModelCallLimitMiddleware", "PydanticToolsParser", "RunnableSequence", "RunnableLambda",
+             "ChannelWrite", "_after_", "StructuredOutput")
+_INTERNAL_EXACT = {"model", "tools", "LangGraph"}
+
+_NODE_LABELS = {
+    "dispute-triage": "📨 Dispute triage (the whole run)",
+    "supervisor": "🧭 Supervisor decides the next step",
+    "ledger_agent": "📒 Ask the Ledger Agent",
+    "fraud_agent": "🛡️ Ask the Fraud Agent",
+    "write_verdict": "✍️ Supervisor writes its recommendation",
+    "policy": "⚙️ Refund policy (code)",
+    "escalate": "👤 Hand to a person",
+    "ledger-agent": "📒 Ledger Agent service",
+    "fraud-agent": "🛡️ Fraud Agent service",
+}
+
+
+def trace_id_from_url(trace_url: str | None) -> str | None:
+    return trace_url.rstrip("/").rsplit("/", 1)[-1] if trace_url else None
+
+
+class LangfuseReader:
+    """Reads one trace's observations. Needs the project's keys (ADR-0025)."""
+
+    def __init__(self, base_url: str, public_key: str, secret_key: str, http: httpx.Client | None = None) -> None:
+        self._http = http or httpx.Client(base_url=base_url.rstrip("/"), auth=(public_key, secret_key), timeout=20)
+
+    @classmethod
+    def from_env(cls) -> "LangfuseReader | None":
+        """None when no keys are configured: the UI then only links to the trace."""
+        base = os.environ.get("LANGFUSE_BASE_URL", "").strip()
+        public = _secret("LANGFUSE_PUBLIC_KEY")
+        secret = _secret("LANGFUSE_SECRET_KEY")
+        return cls(base, public, secret) if base and public and secret else None
+
+    def observations(self, trace_id: str) -> list[dict]:
+        response = self._http.get("/api/public/v2/observations", params={
+            "traceId": trace_id, "limit": 500, "fields": "core,basic,usage,model,io"})
+        response.raise_for_status()
+        return response.json().get("data", [])
+
+
+def _secret(name: str) -> str:
+    """A value from NAME, or from the file NAME_FILE (Key Vault, mounted by the CSI driver)."""
+    if value := os.environ.get(name, "").strip():
+        return value
+    path = os.environ.get(f"{name}_FILE", "").strip()
+    return Path(path).read_text().strip() if path and Path(path).exists() else ""
+
+
+def _is_internal(observation: dict) -> bool:
+    name = observation.get("name") or ""
+    return name in _INTERNAL_EXACT or name.startswith(_INTERNAL)
+
+
+def _when(value: str | None) -> datetime | None:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")) if value else None
+
+
+def _label(observation: dict) -> str:
+    kind, name = observation.get("type"), observation.get("name") or "?"
+    if kind == "GENERATION":
+        return f"🧠 Model call ({observation.get('model') or 'model'})"
+    if kind == "TOOL":
+        try:
+            args = json.loads(observation.get("input") or "{}")
+        except (TypeError, ValueError):
+            args = {}
+        shown = ", ".join(f"{v}" for v in args.values()) if isinstance(args, dict) else ""
+        return f"🔧 {name}({shown})"
+    return _NODE_LABELS.get(name, name)
+
+
+@dataclass(frozen=True)
+class TraceView:
+    rows: list[dict]  # in time order, each with depth, label, offsets, tokens, cost, input, output
+    model_calls: int
+    tool_calls: int
+    tokens: int
+    cost_usd: float
+    duration_s: float
+    hidden: int  # internal steps not shown
+
+
+def trace_view(observations: list[dict], include_internal: bool = False) -> TraceView:
+    """A readable trace: the meaningful steps in time order, indented under their parents. The
+    totals always count every model call, shown or not."""
+    by_id = {o["id"]: o for o in observations}
+    shown = {o["id"] for o in observations if include_internal or not _is_internal(o)}
+
+    def depth(o: dict) -> int:
+        level, parent = 0, o.get("parentObservationId")
+        while parent in by_id:
+            if parent in shown:
+                level += 1
+            parent = by_id[parent].get("parentObservationId")
+        return level
+
+    starts = [t for o in observations if (t := _when(o.get("startTime")))]
+    ends = [t for o in observations if (t := _when(o.get("endTime")))]
+    origin = min(starts) if starts else None
+    rows = []
+    for o in sorted(observations, key=lambda o: o.get("startTime") or ""):
+        if o["id"] not in shown:
+            continue
+        start, end = _when(o.get("startTime")), _when(o.get("endTime"))
+        usage = o.get("usageDetails") or {}
+        rows.append({
+            "depth": depth(o), "label": _label(o), "type": o.get("type"), "name": o.get("name"),
+            "start_ms": round((start - origin).total_seconds() * 1000) if start and origin else 0,
+            "end_ms": round((end - origin).total_seconds() * 1000) if end and origin else None,
+            "tokens": usage.get("total") or 0, "cost_usd": o.get("totalCost") or 0.0,
+            "input": o.get("input"), "output": o.get("output"),
+        })
+    generations = [o for o in observations if o.get("type") == "GENERATION"]
+    return TraceView(
+        rows=rows, model_calls=len(generations),
+        tool_calls=sum(1 for o in observations if o.get("type") == "TOOL"),
+        tokens=sum((o.get("usageDetails") or {}).get("total") or 0 for o in generations),
+        cost_usd=round(sum(o.get("totalCost") or 0 for o in generations), 6),
+        duration_s=round((max(ends) - origin).total_seconds(), 1) if ends and origin else 0.0,
+        hidden=len(observations) - len(shown),
+    )

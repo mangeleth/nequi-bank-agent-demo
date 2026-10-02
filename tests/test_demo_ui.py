@@ -139,3 +139,70 @@ def test_the_streamlit_page_renders_with_the_real_reports(monkeypatch):
     metrics = {m.label: m.value for m in page.metric}
     assert set(metrics) == {"Evaluated requests", "Successful requests", "Success rate", "Total cost", "Cost per success"}
     assert metrics["Success rate"].endswith("%") and metrics["Total cost"].startswith("$")
+
+
+# --- The trace inside the demo (ADR-0025) ---------------------------------------------------------
+
+
+def _obs(id_, name, kind, start, end, parent=None, **extra):
+    return {"id": id_, "name": name, "type": kind, "parentObservationId": parent,
+            "startTime": f"2026-10-02T16:52:{start}Z", "endTime": f"2026-10-02T16:52:{end}Z", **extra}
+
+
+TRACE = [  # the shape of a real trace: graph nodes, an agent in another pod, LangChain internals
+    _obs("root", "dispute-triage", "CHAIN", "17.000", "22.000"),
+    _obs("sup", "supervisor", "CHAIN", "17.002", "18.000", "root"),
+    _obs("seq", "RunnableSequence", "CHAIN", "17.004", "17.999", "sup"),
+    _obs("g1", "AzureChatOpenAI", "GENERATION", "17.008", "17.900", "seq", model="gpt-4o-2024-11-20",
+         usageDetails={"total": 595}, totalCost=0.0021),
+    _obs("node", "ledger_agent", "CHAIN", "18.090", "20.000", "root"),
+    _obs("svc", "ledger-agent", "AGENT", "18.092", "19.990", "node"),
+    _obs("mw", "ModelCallLimitMiddleware.before_model", "CHAIN", "18.094", "18.095", "svc"),
+    _obs("g2", "AzureChatOpenAI", "GENERATION", "18.096", "19.000", "svc", model="gpt-4o-2024-11-20",
+         usageDetails={"total": 700}, totalCost=0.0025),
+    _obs("t1", "get_transaction", "TOOL", "19.099", "19.110", "svc", input='{"transaction_id": "TX-20261001000003"}',
+         output='{"settlement_status": "settled"}'),
+]
+
+
+def test_trace_view_shows_the_story_and_hides_langchain_internals():
+    view = logic.trace_view(TRACE)
+
+    assert [(r["depth"], r["label"]) for r in view.rows] == [
+        (0, "📨 Dispute triage (the whole run)"),
+        (1, "🧭 Supervisor decides the next step"),
+        (2, "🧠 Model call (gpt-4o-2024-11-20)"),  # its RunnableSequence parent is hidden, not counted
+        (1, "📒 Ask the Ledger Agent"),
+        (2, "📒 Ledger Agent service"),
+        (3, "🧠 Model call (gpt-4o-2024-11-20)"),
+        (3, "🔧 get_transaction(TX-20261001000003)"),
+    ]
+    assert view.hidden == 2
+    assert (view.model_calls, view.tool_calls, view.tokens) == (2, 1, 1295)
+    assert view.cost_usd == 0.0046 and view.duration_s == 5.0
+    assert view.rows[6]["start_ms"] == 2099 and view.rows[6]["output"] == '{"settlement_status": "settled"}'
+
+
+def test_trace_view_can_include_every_step_and_totals_do_not_change():
+    every = logic.trace_view(TRACE, include_internal=True)
+    assert len(every.rows) == len(TRACE) and every.hidden == 0
+    assert (every.model_calls, every.cost_usd) == (2, 0.0046)
+
+
+def test_trace_id_comes_from_the_trace_link():
+    assert logic.trace_id_from_url("https://us.cloud.langfuse.com/project/p1/traces/0787695") == "0787695"
+    assert logic.trace_id_from_url(None) is None
+
+
+def test_langfuse_keys_are_read_from_mounted_files(tmp_path, monkeypatch):
+    (tmp_path / "pk").write_text("pk-lf-demo\n")
+    (tmp_path / "sk").write_text("sk-lf-demo\n")
+    monkeypatch.setenv("LANGFUSE_BASE_URL", "https://us.cloud.langfuse.com")
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY_FILE", str(tmp_path / "pk"))
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY_FILE", str(tmp_path / "sk"))
+    assert logic.LangfuseReader.from_env() is not None
+
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY_FILE", str(tmp_path / "missing"))
+    assert logic.LangfuseReader.from_env() is None  # no keys: the UI only links to the trace

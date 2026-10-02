@@ -1,0 +1,16 @@
+# Demo UI theme (ADR-0025): inspired by Nequi's public website palette, with no logo or artwork.
+#   #DA0081 magenta (accent)   #200020 dark purple (text)   #ECE7F5 lilac (panels)
+# Manrope is an open-source Google font, the one Nequi's site uses.
+[theme]
+base = "light"
+primaryColor = "#DA0081"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#ECE7F5"
+textColor = "#200020"
+linkColor = "#DA0081"
+borderColor = "#E3D8F0"
+showWidgetBorder = true
+baseRadius = "1rem"
+buttonRadius = "full"
+font = "Manrope:https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap, sans-serif"
+headingFont = "Manrope:https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap, sans-serif"

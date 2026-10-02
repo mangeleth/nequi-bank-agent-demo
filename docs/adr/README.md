@@ -29,6 +29,7 @@ To change a decision, add a new ADR that supersedes the old one, and mark the ol
 | [0022](0022-known-incident-fast-path.md) | Disputes covered by a confirmed incident are decided by code, without a model | Accepted | M6 |
 | [0023](0023-demo-ui.md) | A Streamlit demo UI that uses the system only as a customer's app would | Accepted | M7 |
 | [0024](0024-public-demo-ui.md) | The demo UI is published on the internet, open to anyone, with no sign-in | Accepted | M7.5 |
+| [0025](0025-ui-style-and-traces.md) | A Nequi-inspired look, clearly labelled as independent, and traces drawn inside the demo | Accepted | M7.5 |
 
 ## Template
 

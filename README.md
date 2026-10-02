@@ -436,14 +436,19 @@ A Streamlit app ([ADR-0023](docs/adr/0023-demo-ui.md)), deployed to AKS.
 
 - **📱 Customer app:** submit one dispute, or two side by side, as a synthetic customer, and watch
   the stored status change live. A dispute decided by a confirmed incident shows *"⚡ Decided
-  without a model: 0 model calls, $0"*; an agent investigation links to its Langfuse trace. Both
-  show the refund policy's checks and the ledger's refund ID.
+  without a model: 0 model calls, $0"*; an agent investigation shows **its trace inside the
+  page**: every step in order, a timeline, model and tool calls, tokens, cost, and each step's
+  input and output ([ADR-0025](docs/adr/0025-ui-style-and-traces.md)). Both show the refund
+  policy's checks and the ledger's refund ID.
 - **📊 Evaluation dashboard:** evaluated requests, successful requests, success rate, total cost,
   and cost per success, per evaluation run over time.
 - **🗺️ Demo script:** the scenarios to show live, in order ([docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md)).
 
 The UI uses the system only as a customer's app would: the intake API, with a login token. It
 cannot reach the queues, the database, the model, or Core Systems.
+
+Its look is inspired by Nequi's public palette and type, with no logo, and every view says it is
+an independent interview demo, not a Nequi product.
 
 
 ## Run it locally

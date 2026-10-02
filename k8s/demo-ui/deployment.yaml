@@ -9,7 +9,7 @@ metadata:
     app.kubernetes.io/part-of: dispute-triage
   annotations:
     # Workload Identity: federated to id-demo-ui, which may read only the demo identity
-    # provider's private key. No model, no queues, no database, no signing key.
+    # provider's private key and the Langfuse keys. No model, no queues, no database, no signing key.
     azure.workload.identity/client-id: ${WI_CLIENT_ID}
 automountServiceAccountToken: false
 ---
