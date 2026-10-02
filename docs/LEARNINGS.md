@@ -124,6 +124,26 @@ invented fields, empty body, timeout, refused connection) against both agents.
 **The lesson.** A circuit breaker you have not tested against a misbehaving dependency is a
 hope, not a control. "The agent is down" and "the agent is wrong" are different failures; test both.
 
+## 8. The evaluator scored traces that had not finished arriving (Milestone 5)
+
+**What happened.** The first evaluation run reported a tool-call failure on one scenario, 67%
+groundedness, and three scenarios that used half the tokens of similar ones. None of it was
+true. Each service sends its part of a trace separately, and the evaluator had read some traces
+before the agents' steps arrived, so tool calls were "missing" and costs were understated.
+
+**What caught it.** The numbers did not fit: a scenario that calls the Ledger Agent cannot cost
+less than the agent alone. The "failure" was in the measurement, not the system.
+
+**What changed.** The evaluator now works out which agent runs a trace must contain (from the
+`steps` in the result), waits until they have all arrived and the count is stable, and flags a
+run as incomplete instead of scoring a partial trace. The rerun: 9 of 9, tool calls 100%.
+
+**The lesson.** An evaluation is code, and its numbers can be wrong in both directions. Sanity
+check a surprising result before acting on it, and never let a missing measurement look like a
+measured zero.
+
+See [ADR-0014](adr/0014-evaluation-against-the-real-model.md).
+
 # Part 2: design principles (study notes)
 
 ## A. Know when not to use an agent: the known-incident fast path
@@ -216,6 +236,57 @@ prompt, a model, or a limit.
 the model cost. Two companion metrics cover that: the share of disputes resolved without a
 person, and the share of automatic decisions later reversed.
 
-**What this repository does today.** Langfuse records the cost of every model call in every
-triage, so the numerator is available per trace. Nothing yet labels a run as a success or
-computes the ratio. Milestone 8 adds an evaluation run of the seven scenarios that reports it.
+**What this repository does today.** `make eval-cluster` runs nine scenarios against the
+deployed system and reports it. Baseline: $0.1284 for nine attempts, nine successes, $0.0143 per
+success (ADR-0014). With one run per scenario this shows the mechanism; it is not yet a measured
+error rate.
+
+## C. What to do when the evidence is not enough
+
+```
+Evidence sufficient and consistent?
+    Yes -> answer using that evidence.
+    No:
+        Missing     -> retrieve the missing information.
+        Conflicting -> verify identity, timing, and authority.
+
+Still unresolved?
+    -> state what is known and what remains uncertain.
+    -> escalate when policy or required resolution demands it.
+```
+
+**Where this repository stands, branch by branch.**
+
+| Branch | Covered? | How |
+|---|---|---|
+| Sufficient and consistent: answer from the evidence | Yes | The supervisor chooses `finish`, the verdict is written from the gathered evidence, and the policy decides (all seven fixture scenarios). |
+| Missing: retrieve it | Yes | The supervisor loops back to an agent; code forces the fraud assessment when a refund is possible; a failed agent is called once more. Finishing without ledger evidence is refused. |
+| Conflicting, by **authority** | Yes | The system of record outranks every other source. Customer says "failed", ledger says "settled": no action. Model's figures differ from the ledger: rejected. Recommended refund differs from the ledger's discrepancy: sent to a person. |
+| Conflicting, by **identity** | Yes | Identity comes only from the verified token; "I am user-1002" in the text changes nothing. Evidence that refers to different transactions fails the policy's `same_transaction` check. |
+| Conflicting, by **timing** | **No** | Nothing checks how fresh the evidence is. A transfer that moves from pending to settled between the lookup and the decision would be judged on the stale reading. There is also no rule about how old a transaction may be to dispute. |
+| Customer's claimed amount differs from the ledger | **Partly** | The policy pays the ledger's figure whatever was claimed, so the money is right, but no test or scenario exercises the mismatch and nothing reports it to a reviewer. |
+| Still unresolved: state what is known and what is uncertain | **Partly** | The result carries the evidence gathered, the path taken, and an `escalation_reason`. It does not separate "known" from "uncertain", and the reason is written for engineers, not customers (entry D). |
+| Escalate when policy demands it | Yes | Policy limits send refunds to a person; high fraud risk goes to fraud operations; every breaker and failure ends in the `escalate` node. |
+
+## D. Say only what has been established
+
+Three situations that sound alike to a customer and are not the same:
+
+| Situation | Precise wording |
+|---|---|
+| The investigation is running | "The transfer is marked as failed. We're checking additional records to determine the reason." |
+| The investigation ended without finding the reason | "The transfer is marked as failed, but the available records don't show why." |
+| The case has actually been escalated | "We couldn't determine the reason from the available records, so we've sent the case for review." |
+
+Each sentence states only the evidence and the actions that exist. "We're checking" is true
+only while something is checking. "We've sent the case for review" is true only once it has
+been sent. Saying it earlier is a small false statement to a customer about their money.
+
+**The same rule applies to verbs about money:** "recommended", "approved", "sent", and
+"received" are four different facts, and a message may use only the one that has happened.
+
+**What this repository does today.** There is no customer wording yet. The customer-facing
+text is the model's free-text `explanation`, and `escalation_reason` reads like a log line
+("the fraud agent was already called 2 times"). An `auto_approved` refund is a decision; no
+money moves yet, so a message saying "your refund has been sent" would be false today. The fix
+is a message chosen by code from the final state, with the model's text as supporting detail.

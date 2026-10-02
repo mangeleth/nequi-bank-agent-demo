@@ -75,7 +75,11 @@ them automatically on every change.
 | 2. Engine recursion limit | `recursion_limit=15` on every run caps total super-steps and inference cost; `GraphRecursionError` becomes an escalation | `services/supervisor/main.py` |
 | 3. Automated adversarial tests | A model that loops, agents that are down, slow, or answer with garbage, an inflated refund, a fooled model, a rogue MCP server: each must end gracefully in human review | `tests/test_supervisor.py`, `tests/test_supervisor_clients.py`, `tests/test_fraud_agent.py`, `tests/test_ledger_agent.py` |
 
-Still to do in Milestone 8: run the suite in GitHub Actions as a required check, and add an
-evaluation run of the seven fixture scenarios against the real model. The evaluation reports
-**cost per success**: the cost of all evaluated attempts, including retries, divided by the
-number of disputes that ended in the expected outcome (see `docs/LEARNINGS.md`, Part 2).
+Done early (during Milestone 5): the evaluation run against the real model. `make eval-cluster`
+runs nine scenarios on the deployed system and reports task success, tool-call correctness,
+numeric groundedness, latency, tokens, and **cost per success** (ADR-0014). Baseline: 9 of 9,
+$0.0143 per success.
+
+Still to do in Milestone 8: run the unit tests and the evaluation in GitHub Actions as required
+checks; more scenarios, including conflicting and stale evidence (`docs/LEARNINGS.md`, Part 2,
+entry C); several runs per scenario to measure decision agreement.

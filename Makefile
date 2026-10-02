@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage test guard-clean build push deploy smoke release
+.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster test guard-clean build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -207,6 +207,24 @@ run-ledger:
 
 run-supervisor:
 	$(LANGFUSE_KEYS) .venv/bin/uvicorn services.supervisor.main:create_app --factory --port 8004
+
+# ---------------------------------------------------------------------------------------------
+# Evaluation against the real model (ADR-0014). A full run costs about $0.20 in model usage.
+# ---------------------------------------------------------------------------------------------
+SUPERVISOR_URL ?= http://127.0.0.1:8004
+EVAL_LABEL ?= local
+
+## Run evals/scenarios.json against a running supervisor; fails if any scenario fails
+eval:
+	$(LANGFUSE_KEYS) .venv/bin/python -m evals.run --url $(SUPERVISOR_URL) --label $(EVAL_LABEL)
+
+## Evaluate the system deployed on AKS, through a temporary port-forward to the supervisor
+eval-cluster:
+	@mkdir -p .local
+	@kubectl port-forward -n $(K8S_NAMESPACE) svc/supervisor 18004:80 >/dev/null 2>&1 & echo $$! > .local/port-forward.pid
+	@sleep 4
+	@$(MAKE) --no-print-directory eval SUPERVISOR_URL=http://127.0.0.1:18004 EVAL_LABEL=aks; status=$$?; \
+		kill $$(cat .local/port-forward.pid) 2>/dev/null; rm -f .local/port-forward.pid; exit $$status
 
 # ---------------------------------------------------------------------------------------------
 # Delivery (ADR-0004): make release SERVICE=core-systems
