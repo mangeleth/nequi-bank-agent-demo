@@ -384,13 +384,13 @@ The unit tests script the model; this measures it. `make eval-cluster` sends ten
 the system deployed on AKS and scores each run from its Langfuse trace
 ([ADR-0014](docs/adr/0014-evaluation-against-the-real-model.md)).
 
-| Metric | Latest run (commit `8c949d0`, gpt-4o 2024-11-20) |
+| Metric | Latest run (commit `2df49b3`, gpt-4o 2024-11-20) |
 |---|---|
 | Task success (expected status, decision, policy route, and customer message) | 10 of 10 |
 | Tool calls correct (required calls made, nothing else looked up) | 100% |
 | Numeric groundedness (numbers the models wrote appear in the tool results) | 100% |
 | Agent calls that were retries | 0 |
-| Total spending for ten attempts | $0.1294 |
+| Total spending for ten attempts | $0.1287 |
 | Cost per success | $0.0129 |
 | Time to accept a dispute (the `202`), median | None |
 | Time to result, median / max | None |

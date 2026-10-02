@@ -28,7 +28,7 @@
           }
         }
       ],
-      "customer_message_contains": "A refund of 50000.00 COP has been approved. It has not been paid yet.",
+      "customer_message_contains": "A refund of 50000.00 COP has been paid back to your account.",
       "replay": false
     }
   },
@@ -48,7 +48,7 @@
       "decision": "refund_recommended",
       "policy_route": "auto_approved",
       "required_tool_calls": [],
-      "customer_message_contains": "A refund of 50000.00 COP has been approved. It has not been paid yet.",
+      "customer_message_contains": "A refund of 50000.00 COP has been paid back to your account.",
       "replay": true
     }
   },
@@ -261,7 +261,7 @@
           }
         }
       ],
-      "customer_message_contains": "A refund of 50000.00 COP has been approved. It has not been paid yet.",
+      "customer_message_contains": "A refund of 50000.00 COP has been paid back to your account.",
       "replay": false
     }
   },

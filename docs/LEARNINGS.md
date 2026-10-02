@@ -179,6 +179,34 @@ every manifest is rendered and checked with a client-side dry run before anythin
 **The lesson.** Validate generated or edited configuration before it reaches the deploy step,
 and treat "the cluster rejected it" as a late safety net, not the check.
 
+## 11. A fake hid a contract mismatch; the payment design contained it (Milestone 6)
+
+**What happened.** On the first deploy of refund payments, every approved dispute went to a
+person, although the ledger had paid. The ledger's confirmation describes the whole refund
+(customer, transaction, amount, ...). The supervisor's `RefundPayment` contract forbids fields it
+does not list, so the client called a successful payment "malformed" and treated it as "no
+answer".
+
+**Why the tests passed.** The test fake returned a ready-made `RefundPayment`. It never produced
+the ledger's real reply, so the client's parsing of that reply was never tested.
+
+**Why nothing bad happened.** The design assumed "no answer" could mean "paid":
+- the retry used the same idempotency key, and the ledger returned the same refund (one row each)
+- after the last delivery the dispute went to a person, with the key to look up in the ledger
+- the customer was told "could not be paid automatically", never "paid"
+
+**What changed.**
+- The client keeps the fields it records and checks that the confirmation is for the
+  transaction, amount, and key it asked for.
+- New tests run the supervisor's client against the real Core Systems app. Checked: the test
+  fails on the old client.
+- The evaluator waits until a dispute has settled; a finished run that is still
+  `refund_approved` is mid-payment.
+
+**The lesson.** Where two services meet, test at least once against the real other side, not
+only a fake. And design the money path so that a bug in reading an answer fails safe: the
+unknown case must never pay twice and never claim "paid".
+
 # Part 2: design principles (study notes)
 
 ## A. Know when not to use an agent: the known-incident fast path
