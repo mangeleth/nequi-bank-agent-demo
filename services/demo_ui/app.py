@@ -279,7 +279,8 @@ def customer_service(token: str) -> None:
     with right:
         st.markdown("**Tu evaluación de la explicación**")
         answers = {name: st.radio(label, [True, False], index=None, horizontal=True, key=f"cs-{name}-{chosen}",
-                                  format_func=lambda ok: "✅ cumple" if ok else "❌ no cumple")
+                                  format_func=lambda ok: "✅ cumple" if ok else "❌ no cumple",
+                                  help=logic.CRITERIA_HELP[name])
                    for name, label in logic.CRITERIA_ES.items()}
         with st.expander("Ver la evaluación del juez (después de responder)"):
             show_judgement(item.get("judgement"))
@@ -444,6 +445,13 @@ def judge_health() -> None:
     except Exception:
         recent, labels = [], []
     st.markdown("**El juez frente a las personas, en disputas reales**")
+    st.markdown("El juez y las personas responden las mismas tres preguntas sobre la explicación que "
+                "escribieron los agentes. Cada criterio se evalúa por separado: una explicación puede tener "
+                "los datos correctos y aun así ser confusa.")
+    st.markdown("\n".join(f"- **{logic.CRITERIA_ES[name]}:** {text}" for name, text in logic.CRITERIA_HELP.items()))
+    st.caption("**Fallas confirmadas:** el juez dijo ❌ y la persona también. **Falsas alarmas:** el juez dijo ❌ y la "
+               "persona ✅ (cuestan tiempo, no dinero). **Aprobaciones inseguras:** el juez dijo ✅ y la persona ❌ "
+               "(el error peligroso; solo se encuentra con las muestras de control).")
     if not labels:
         st.caption("Aún no hay re-evaluaciones de personas. Se acumulan desde la pestaña de revisión "
                    "(servicio al cliente): casos marcados por el juez y muestras de control.")

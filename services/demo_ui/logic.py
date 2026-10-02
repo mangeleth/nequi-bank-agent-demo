@@ -490,7 +490,23 @@ def ledger_owed(result: dict | None) -> str | None:
     return f"{Decimal(ledger['debited_amount']) - Decimal(ledger['credited_amount'])} {ledger.get('currency', 'COP')}"
 
 
-CRITERIA_ES = {"groundedness": "Basada en los registros", "completeness": "Completa", "clarity": "Clara"}
+# Spanish, with the English name the code and the evaluation literature use.
+CRITERIA_ES = {"groundedness": "Basada en los registros (groundedness)", "completeness": "Completa (completeness)",
+               "clarity": "Clara (clarity)"}
+
+# What each criterion means, in the reviewer's words. The same definitions as the judge's rubric
+# (services/judge/rubric.py), so people and the judge answer the same questions.
+CRITERIA_HELP = {
+    "groundedness": ("Cada dato que afirma (montos, estado, causa, fechas, riesgo) coincide con los registros "
+                     "del banco, y no inventa nada. Ejemplo de ❌: “falló por fondos insuficientes” cuando el "
+                     "registro dice error de procesamiento. Decir que algo no se sabe no es un error."),
+    "completeness": ("Dice el resultado (reembolso, sin reembolso, va a una persona) y su motivo principal, o "
+                     "dice claramente qué no se sabe. No hace falta explicar plazos ni pasos de pago. Ejemplo de "
+                     "❌: “revisamos tu caso con cuidado”, sin decir qué se decidió ni por qué."),
+    "clarity": ("Un cliente sin conocimientos bancarios la entendería: sin jerga, nombres de campos ni texto "
+                "tipo código, y sin relleno que esconda la respuesta. Ser breve no es un defecto. Ejemplo de ❌: "
+                "“settlement_status=failed; delta=50000.00”."),
+}
 
 
 def judgement_rows(judgement: dict | None) -> list[dict]:

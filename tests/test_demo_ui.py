@@ -300,7 +300,7 @@ def test_judgement_rows_and_badges_in_spanish():
         "groundedness": {"passed": False, "reason": "invented cause"},
         "completeness": {"passed": True, "reason": "ok"}, "clarity": {"passed": True, "reason": "ok"}}}
     assert logic.judge_badge(judgement) == "❌ con problemas" and logic.judge_badge(None) == "— sin evaluar"
-    assert logic.judgement_rows(judgement)[0] == {"criterio": "Basada en los registros", "resultado": "❌ no cumple",
+    assert logic.judgement_rows(judgement)[0] == {"criterio": "Basada en los registros (groundedness)", "resultado": "❌ no cumple",
                                                   "razón del juez": "invented cause"}
 
 
@@ -354,3 +354,22 @@ def test_judge_vs_people_counts_confirmations_false_alarms_and_unsafe_passes():
     assert (g["reviewed"], g["agree"], g["confirmed"], g["false_alarms"], g["unsafe_passes"]) == (3, 1, 1, 1, 1)
     assert stats["kinds"] == {"judge_flag": 2, "control_sample": 1}
     assert stats["criteria"]["clarity"]["agree"] == 3
+
+
+def test_the_criteria_are_explained_with_the_same_meaning_as_the_judges_rubric():
+    from services.judge.rubric import Criterion
+
+    assert set(logic.CRITERIA_HELP) == set(logic.CRITERIA_ES) == {c.value for c in Criterion}
+    assert "inventa" in logic.CRITERIA_HELP["groundedness"] and "no se sabe" in logic.CRITERIA_HELP["groundedness"]
+    assert "motivo" in logic.CRITERIA_HELP["completeness"] and "jerga" in logic.CRITERIA_HELP["clarity"]
+
+
+def test_the_dashboard_explains_the_three_criteria(monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setenv("EVAL_RESULTS_DIR", "evals/results")
+    page = AppTest.from_file(str(Path(__file__).resolve().parent.parent / "services/demo_ui/app.py"),
+                             default_timeout=30).run()
+    text = " ".join(m.value for m in page.markdown)
+    for name in ("Basada en los registros (groundedness)", "Completa (completeness)", "Clara (clarity)"):
+        assert f"**{name}:**" in text
