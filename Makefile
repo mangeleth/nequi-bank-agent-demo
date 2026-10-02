@@ -278,15 +278,23 @@ servicebus-create:
 	fi
 	az servicebus queue create -g $(AKS_RESOURCE_GROUP) --namespace-name $(SERVICEBUS_NAMESPACE) -n $(SERVICEBUS_QUEUE) \
 		--lock-duration PT5M --max-delivery-count 2 --enable-dead-lettering-on-message-expiration true -o none
+	@# Approved refunds (ADR-0021): a shorter lock (a payment takes seconds, not a whole triage) and
+	@# more deliveries, so a ledger that is briefly down does not send every refund to a person.
+	@# --max-delivery-count must equal REFUND_MAX_DELIVERIES in services/supervisor/payments.py.
+	az servicebus queue create -g $(AKS_RESOURCE_GROUP) --namespace-name $(SERVICEBUS_NAMESPACE) -n $(REFUNDS_QUEUE) \
+		--lock-duration PT1M --max-delivery-count 5 --enable-dead-lettering-on-message-expiration true -o none
 
-## Allow an identity to send to OR receive from the queue, never both.
-## Usage: make sb-grant SERVICE=supervisor SB_ROLE=Sender | make sb-grant SERVICE=triage-worker SB_ROLE=Receiver
+## Allow an identity to send to OR receive from ONE queue, never both.
+## Usage: make sb-grant SERVICE=supervisor SB_ROLE=Sender
+##        make sb-grant SERVICE=triage-worker SB_ROLE=Receiver
+##        make sb-grant SERVICE=triage-worker SB_ROLE=Sender QUEUE=refunds
+SB_QUEUE = $(or $(QUEUE),$(SERVICEBUS_QUEUE))
 sb-grant:
 	az role assignment create -o none \
 		--assignee-object-id $$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) --query principalId -o tsv) \
 		--assignee-principal-type ServicePrincipal \
 		--role "Azure Service Bus Data $(SB_ROLE)" \
-		--scope $$(az servicebus queue show -g $(AKS_RESOURCE_GROUP) --namespace-name $(SERVICEBUS_NAMESPACE) -n $(SERVICEBUS_QUEUE) --query id -o tsv)
+		--scope $$(az servicebus queue show -g $(AKS_RESOURCE_GROUP) --namespace-name $(SERVICEBUS_NAMESPACE) -n $(SB_QUEUE) --query id -o tsv)
 
 ## Forget every dispute: gate keys in Redis and records in PostgreSQL (demo and evaluation only)
 demo-reset:
@@ -408,7 +416,7 @@ push: acr-login
 ## starts, so a pod created first would start with the old ones.
 RENDER = IMAGE=$(IMAGE) IMAGE_TAG=$(IMAGE_TAG) WI_CLIENT_ID=$$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) --query clientId -o tsv 2>/dev/null) \
 	AZURE_TENANT_ID=$$(az account show --query tenantId -o tsv) \
-	envsubst '$$IMAGE $$IMAGE_TAG $$SERVICEBUS_NAMESPACE $$SERVICEBUS_QUEUE $$ACR_NAME $$WI_CLIENT_ID $$AZURE_TENANT_ID $$KEYVAULT_NAME $$AOAI_NAME $$AOAI_DEPLOYMENT $$AOAI_API_VERSION $$JWT_ISSUER $$JWT_AUDIENCE $$LANGFUSE_BASE_URL'
+	envsubst '$$IMAGE $$IMAGE_TAG $$SERVICEBUS_NAMESPACE $$SERVICEBUS_QUEUE $$REFUNDS_QUEUE $$ACR_NAME $$WI_CLIENT_ID $$AZURE_TENANT_ID $$KEYVAULT_NAME $$AOAI_NAME $$AOAI_DEPLOYMENT $$AOAI_API_VERSION $$JWT_ISSUER $$JWT_AUDIENCE $$LANGFUSE_BASE_URL'
 WORKLOAD_FILES = k8s/$(SERVICE)/deployment.yaml k8s/$(SERVICE)/statefulset.yaml
 
 deploy:

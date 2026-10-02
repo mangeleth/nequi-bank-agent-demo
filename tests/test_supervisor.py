@@ -15,6 +15,7 @@ from services.supervisor.clients import RefundRefused, SpecialistUnavailable
 from services.supervisor.dedup import InMemoryGate
 from services.supervisor.graph import MAX_CALLS_PER_AGENT, MAX_SUPERVISOR_TURNS, breaker
 from services.supervisor.main import create_app
+from services.supervisor.payments import REFUND_MAX_DELIVERIES
 from services.supervisor.store import InMemoryDisputeStore
 from shared.auth import verify_token
 from shared.refund_policy import CustomerRefundHistory, RefundPolicyConfig
@@ -113,10 +114,12 @@ class Outcome:
 
 
 def wait_until_done(client, dispute_id: str, headers: dict) -> dict:
-    """Poll the status endpoint until the run is over, as a client app would."""
+    """Poll the status endpoint until the dispute has settled, as a client app would. A finished
+    run that is still refund_approved is waiting for its payment (ADR-0021)."""
     for _ in range(500):
         view = client.get(f"{URL}/{dispute_id}", headers=headers).json()
-        if view["execution_status"] in ("finished", "failed"):
+        if view["execution_status"] == "failed" or (
+                view["execution_status"] == "finished" and view["status"] != "refund_approved"):
             return view
         time.sleep(0.01)
     raise AssertionError(f"dispute {dispute_id} never finished: {view}")
@@ -391,7 +394,7 @@ def test_no_answer_from_the_ledger_is_retried_without_asking_the_model_again():
 def test_a_payment_still_unknown_after_the_last_delivery_goes_to_a_person():
     outcome, _, specialists = triage(HAPPY, FakeSpecialists(pay="down"))
 
-    assert len(specialists.pay_calls) == 2  # one attempt and one retry, then stop
+    assert len(specialists.pay_calls) == REFUND_MAX_DELIVERIES  # more patience than a triage, then stop
     assert outcome.view["status"] == "pending_human_approval"
     reason = outcome.json()["escalation_reason"]
     assert "did not answer" in reason and f"dispute:{outcome.view['dispute_id']}" in reason  # where to look

@@ -1,8 +1,10 @@
 """Triage worker: takes disputes from the queue and runs them (ADR-0018).
 
 A separate deployment from the intake API, with its own identity:
-    intake API   may SEND to the queue; cannot call a model or sign a token
-    this worker  may RECEIVE from the queue, call the model, and sign tokens; has no API
+    intake API    may SEND to the dispute queue; cannot call a model or sign a token
+    this worker   may RECEIVE from the dispute queue, call the model, sign tokens, and SEND approved
+                  refunds to the refunds queue; it does not pay
+    refund payer  may RECEIVE from the refunds queue and pay (services/supervisor/payer.py)
 
 It exposes only health endpoints, for Kubernetes. Nothing sends it work over HTTP: work arrives
 from the queue, so a customer-facing request can never reach this process.
@@ -41,6 +43,7 @@ def create_app(
     policy: RefundPolicyConfig | None = None,
     store: DisputeStore | None = None,
     queue: DisputeQueue | None = None,
+    refunds: DisputeQueue | None = None,
     signer: TokenSigner | None = None,
     delegation: DelegationSettings | None = None,
     recursion_limit: int = RECURSION_LIMIT,
@@ -59,11 +62,14 @@ def create_app(
             http = httpx.AsyncClient(timeout=60)
         app.state.store, pool = (store, None) if store is not None else await open_store()
         app.state.queue = queue or ServiceBusQueue(os.environ["SERVICEBUS_NAMESPACE"], os.environ["SERVICEBUS_QUEUE"])
+        # Approved refunds go to their own queue; this worker may only SEND to it (ADR-0021).
+        app.state.refunds = refunds or ServiceBusQueue(os.environ["SERVICEBUS_NAMESPACE"], os.environ["REFUNDS_QUEUE"])
         signing, settings = (signer, delegation) if signer is not None else build_signer()
         worker_tracing = tracing or build_tracing()
         runner = TriageRunner(
             store=app.state.store,
             queue=app.state.queue,
+            refunds=app.state.refunds,
             graph=build_graph(model or build_chat_model()),
             specialists=specialists or HttpSpecialists(
                 http,
@@ -88,8 +94,9 @@ def create_app(
         with suppress(asyncio.CancelledError):
             await app.state.consumer
         worker_tracing.shutdown()
-        if isinstance(app.state.queue, ServiceBusQueue):
-            await app.state.queue.close()
+        for bus in (app.state.queue, app.state.refunds):
+            if isinstance(bus, ServiceBusQueue):
+                await bus.close()
         if pool is not None:
             await pool.close()
         if http is not None:

@@ -205,6 +205,8 @@ class RemoteQueue:
 
 
 async def test_intake_only_accepts_and_a_separate_worker_does_the_work():
+    from services.supervisor.payer import create_app as create_payer
+    from services.supervisor.payments import REFUND_MAX_DELIVERIES
     from services.supervisor.worker import create_app as create_worker
     from shared.refund_policy import RefundPolicyConfig
     from shared.tracing import Tracing
@@ -222,16 +224,33 @@ async def test_intake_only_accepts_and_a_separate_worker_does_the_work():
         assert (await intake.get(dispute_id)).json()["execution_status"] == "queued"
         assert intake.model.seen == []
 
-        # A worker, with its own model and credentials, picks it up from the queue.
+        # A worker, with its own model and credentials, picks it up from the queue. It decides,
+        # and puts the approved refund on the refunds queue. It does not pay.
+        refunds = InMemoryQueue(max_deliveries=REFUND_MAX_DELIVERIES)
         worker_model = ScriptedChatModel(script=HAPPY)
         worker = create_worker(model=worker_model, specialists=intake.specialists, tracing=Tracing(),
-                               policy=RefundPolicyConfig(), store=store, queue=queue, signer=SIGNER,
-                               delegation=DELEGATION, retry_delay_seconds=0, shutdown_grace_seconds=0.2)
+                               policy=RefundPolicyConfig(), store=store, queue=queue, refunds=refunds,
+                               signer=SIGNER, delegation=DELEGATION, retry_delay_seconds=0,
+                               shutdown_grace_seconds=0.2)
         async with worker.router.lifespan_context(worker):
             view = await intake.finished(dispute_id)
 
-        assert (view["execution_status"], view["status"]) == ("finished", "refund_paid")
+        assert (view["execution_status"], view["status"]) == ("finished", "refund_approved")
         assert len(worker_model.seen) == len(HAPPY) and intake.model.seen == []
+        assert intake.specialists.pay_calls == []  # decided, not paid
+
+        # The refund payer, a third process with no model at all, pays it.
+        payer = create_payer(store=store, queue=refunds, specialists=intake.specialists, per_second=100,
+                             retry_delay_seconds=0)
+        async with payer.router.lifespan_context(payer):
+            for _ in range(200):
+                view = (await intake.get(dispute_id)).json()
+                if view["status"] != "refund_approved":
+                    break
+                await asyncio.sleep(0.01)
+
+        assert view["status"] == "refund_paid"
+        assert len(intake.specialists.pay_calls) == 1
 
 
 async def test_intake_is_ready_even_when_the_agents_are_down():
@@ -254,7 +273,7 @@ async def test_worker_health_reports_a_stopped_consumer():
 
     worker = create_worker(model=ScriptedChatModel(script=HAPPY), specialists=SlowSpecialists(), tracing=Tracing(),
                            policy=RefundPolicyConfig(), store=InMemoryDisputeStore(), queue=InMemoryQueue(),
-                           signer=SIGNER, delegation=DELEGATION, shutdown_grace_seconds=0.2)
+                           refunds=InMemoryQueue(), signer=SIGNER, delegation=DELEGATION, shutdown_grace_seconds=0.2)
     async with worker.router.lifespan_context(worker):
         async with _httpx.AsyncClient(transport=_httpx.ASGITransport(app=worker), base_url="http://worker") as http:
             assert (await http.get("/healthz")).status_code == 200

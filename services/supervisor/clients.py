@@ -79,7 +79,8 @@ class Specialists(Protocol):
 
 
 class HttpSpecialists:
-    def __init__(self, http: httpx.AsyncClient, *, fraud_url: str, ledger_url: str, core_url: str) -> None:
+    def __init__(self, http: httpx.AsyncClient, *, core_url: str, fraud_url: str = "", ledger_url: str = "") -> None:
+        """The refund payer needs only Core Systems, so the agents' URLs are optional."""
         self._http = http
         self._fraud_url = fraud_url.rstrip("/")
         self._ledger_url = ledger_url.rstrip("/")

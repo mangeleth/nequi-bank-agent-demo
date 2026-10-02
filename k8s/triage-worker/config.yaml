@@ -13,6 +13,8 @@ data:
   QUEUE_BACKEND: servicebus
   SERVICEBUS_NAMESPACE: ${SERVICEBUS_NAMESPACE}
   SERVICEBUS_QUEUE: ${SERVICEBUS_QUEUE}
+  # Approved refunds go here, for the refund payer (ADR-0021). This worker may only send to it.
+  REFUNDS_QUEUE: ${REFUNDS_QUEUE}
   DISPUTE_STORE: postgres
   PGHOST: postgres
   PGDATABASE: disputes

@@ -97,7 +97,17 @@ keeps nothing across a restart, which is acceptable for a duplicate check and no
 On the cluster both Core Systems pods share one ledger: a refund paid by one pod and retried on
 the other returns the same refund.
 
-### How the worker pays ([ADR-0020](docs/adr/0020-paying-approved-refunds.md))
+### How approved refunds are paid ([ADR-0020](docs/adr/0020-paying-approved-refunds.md), [ADR-0021](docs/adr/0021-refund-payer-and-refunds-queue.md))
+
+```
+triage-worker   decide -> save refund_approved -> send the dispute ID to the "refunds" queue
+refund-payer    take at most 2 per second -> pay -> refund_paid
+```
+
+The refund payer is its own deployment: it can take from the refunds queue and nothing else, and
+has no model access. The process that runs the model never moves money. Operations can set the
+pace (`REFUND_PAYMENTS_PER_SECOND`) or pause payments (`REFUND_PAYMENTS_PAUSED`) while triage
+keeps deciding; paused refunds wait safely in the queue.
 
 The decision is saved first; payment is a separate step that works from the saved approval.
 
@@ -105,7 +115,7 @@ The decision is saved first; payment is a separate step that works from the save
 |---|---|---|
 | Paid (`201`), or already paid (`200` replay) | `refund_paid` | Said only after the ledger confirms |
 | A definite no, e.g. `amount_mismatch` (`422`) | `pending_human_approval` | Retrying would get the same answer; a person, not a model, decides which amount is right |
-| No answer (timeout, `5xx`) | retried, then `pending_human_approval` | Unknown whether it paid; the same key makes the retry safe |
+| No answer (timeout, `5xx`) | retried (5 deliveries), then `pending_human_approval` | Unknown whether it paid; the same key makes the retry safe |
 
 If the queue redelivers a dispute whose decision was already saved, the worker only pays: the
 model is not asked again, so a second run cannot reach a different decision about money that may

@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 from uuid import UUID
 
-MAX_DELIVERIES = 2  # one attempt and one retry; then the dead-letter queue
+MAX_DELIVERIES = 2  # dispute queue: one attempt and one retry; then the dead-letter queue
 
 
 @dataclass
@@ -28,12 +28,13 @@ class Delivery:
     """One delivery of one message to one worker."""
 
     dispute_id: UUID
-    delivery_count: int  # 1 the first time, 2 on the retry
+    delivery_count: int  # 1 the first time, 2 on the first retry, ...
     handle: Any = field(default=None, repr=False)  # the adapter's own message object
+    max_deliveries: int = MAX_DELIVERIES  # the queue's limit; must match its broker setting
 
     @property
     def is_last(self) -> bool:
-        return self.delivery_count >= MAX_DELIVERIES
+        return self.delivery_count >= self.max_deliveries
 
 
 class QueueUnavailable(Exception):
@@ -61,7 +62,8 @@ class DisputeQueue(Protocol):
 class InMemoryQueue:
     """Single-process queue with the same delivery rules as the real one."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_deliveries: int = MAX_DELIVERIES) -> None:
+        self.max_deliveries = max_deliveries
         self._ready: asyncio.Queue[tuple[UUID, int]] = asyncio.Queue()
         self._locked: dict[UUID, int] = {}  # received and not yet completed or abandoned
         self.dead_letters: list[tuple[UUID, str]] = []
@@ -73,7 +75,7 @@ class InMemoryQueue:
         while True:
             dispute_id, count = await self._ready.get()
             self._locked[dispute_id] = count
-            yield Delivery(dispute_id=dispute_id, delivery_count=count)
+            yield Delivery(dispute_id=dispute_id, delivery_count=count, max_deliveries=self.max_deliveries)
 
     async def complete(self, delivery: Delivery) -> None:
         self._locked.pop(delivery.dispute_id, None)
@@ -92,7 +94,7 @@ class InMemoryQueue:
     async def expire_locks(self) -> None:
         """What the real queue does when a worker dies holding messages: offer them again."""
         for dispute_id, count in list(self._locked.items()):
-            await self.abandon(Delivery(dispute_id=dispute_id, delivery_count=count))
+            await self.abandon(Delivery(dispute_id=dispute_id, delivery_count=count, max_deliveries=self.max_deliveries))
 
     async def ping(self) -> bool:
         return True
@@ -103,17 +105,18 @@ class ServiceBusQueue:
     namespace has connection strings disabled.
 
     The delivery rules live in the queue's own settings (`make servicebus-create`): a 5-minute
-    lock, and at most MAX_DELIVERIES deliveries before the broker itself dead-letters a message.
+    lock, and at most `max_deliveries` deliveries before the broker itself dead-letters a message.
     So a worker that dies needs no code of ours: its lock expires and the message returns.
     """
 
-    def __init__(self, namespace: str, queue_name: str, credential=None) -> None:
+    def __init__(self, namespace: str, queue_name: str, credential=None, max_deliveries: int = MAX_DELIVERIES) -> None:
         from azure.identity.aio import DefaultAzureCredential
         from azure.servicebus.aio import ServiceBusClient
 
         self._credential = credential or DefaultAzureCredential()
         self._client = ServiceBusClient(f"{namespace}.servicebus.windows.net", self._credential)
         self._queue_name = queue_name
+        self.max_deliveries = max_deliveries  # must equal the queue's --max-delivery-count
         self._sender = None
         self._receiver = None
 
@@ -146,7 +149,8 @@ class ServiceBusQueue:
                 await self._receiver.dead_letter_message(message, reason="the message is not a dispute ID")
                 continue
             # The broker counts deliveries that already failed; this one is the next.
-            yield Delivery(dispute_id=dispute_id, delivery_count=(message.delivery_count or 0) + 1, handle=message)
+            yield Delivery(dispute_id=dispute_id, delivery_count=(message.delivery_count or 0) + 1, handle=message,
+                           max_deliveries=self.max_deliveries)
 
     async def complete(self, delivery: Delivery) -> None:
         await self._receiver.complete_message(delivery.handle)

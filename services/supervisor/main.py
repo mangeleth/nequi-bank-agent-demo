@@ -35,6 +35,7 @@ from services.supervisor.clients import HttpSpecialists, Specialists, Specialist
 from services.supervisor.dedup import DisputeGate, GateUnavailable, build_gate, dispute_key
 from services.supervisor.graph import RECURSION_LIMIT, build_graph
 from services.supervisor.messages import NEEDS_PERSON, RECEIVED
+from services.supervisor.payments import REFUND_MAX_DELIVERIES, RefundPayer
 from services.supervisor.queue import DisputeQueue, InMemoryQueue, ServiceBusQueue
 from services.supervisor.store import DisputeRecord, DisputeStore, open_store
 from services.supervisor.triage import RETRY_DELAY_SECONDS, TriageRunner
@@ -122,14 +123,19 @@ def create_app(
             # No separate worker exists for an in-memory queue, so this process is the worker too.
             signing, settings = (signer, delegation) if signer is not None else build_signer()
             worker_tracing = tracing or build_tracing()
+            # ... and the refund payer, with its own in-memory queue and delivery limit.
+            refunds = InMemoryQueue(max_deliveries=REFUND_MAX_DELIVERIES)
+            payer = RefundPayer(store=state.store, queue=refunds, specialists=state.specialists,
+                                retry_delay_seconds=retry_delay_seconds, **RefundPayer.settings_from_env())
             runner = TriageRunner(
-                store=state.store, queue=state.queue, graph=build_graph(model or build_chat_model()),
+                store=state.store, queue=state.queue, refunds=refunds, graph=build_graph(model or build_chat_model()),
                 specialists=state.specialists, policy=policy or RefundPolicyConfig.from_env(),
                 tracing=worker_tracing, signer=signing, delegation=settings,
                 recursion_limit=recursion_limit, retry_delay_seconds=retry_delay_seconds,
                 shutdown_grace_seconds=shutdown_grace_seconds,
             )
             background.append(asyncio.create_task(runner.run_forever()))
+            background.append(asyncio.create_task(payer.run_forever()))
         yield
         for task in background:
             task.cancel()
