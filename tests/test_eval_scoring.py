@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from evals.scoring import evaluate, numbers_in, numeric_groundedness, summarize, tool_calls_correct
+from evals.scoring import agent_retries, evaluate, numbers_in, numeric_groundedness, summarize, tool_calls_correct
 
 TX = "TX-20261001000001"
 LEDGER_OUTPUT = '{"amount": "50000.00", "debited_amount": "50000.00", "credited_amount": "0.00"}'
@@ -139,3 +139,17 @@ def test_cost_per_success_charges_failures_to_the_successes():
 def test_cost_per_success_is_undefined_when_nothing_succeeds():
     failed = evaluate(run(body={}), SCENARIO)
     assert summarize([failed])["cost_per_success_usd"] is None
+
+
+def test_retries_are_counted_from_the_reported_path():
+    steps = ["supervisor -> ledger_agent: x", "ledger_agent: failed, debited 1, credited 0",
+             "supervisor -> fraud_agent: x", "fraud_agent: unavailable",
+             "supervisor -> fraud_agent: x", "fraud_agent: risk low (0.08)", "verdict: refund_recommended"]
+    assert agent_retries({"steps": steps}) == 1
+    assert agent_retries({"steps": steps[:2]}) == 0
+    assert agent_retries({}) == 0
+
+
+def test_summary_reports_spending_and_cost_per_success_together():
+    summary = summarize([evaluate(run(), SCENARIO)])
+    assert {"successes", "agent_retries", "total_cost_usd", "cost_per_success_usd"} <= set(summary)

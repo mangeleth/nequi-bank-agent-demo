@@ -232,14 +232,29 @@ only in part. After the fix, all seven scenarios succeed and the two figures are
 between them is the price of unreliability, and it is the number to watch when changing a
 prompt, a model, or a limit.
 
+**Measure both spending and cost per success.** A retry policy is the clearest case. These are
+hypothetical results for the same 100 requests:
+
+| Policy | Total spending | Successful requests | Cost per success |
+|---|---|---|---|
+| No retries | $10 | 50 | $0.20 |
+| Allow retries | $12 | 80 | $0.15 |
+
+Retries increased spending, and recovered enough failures to lower the cost per success. Looking
+only at spending, retries look like waste; looking only at cost per success hides that the
+budget went up 20%. The two numbers answer different questions (what will this cost, and what
+does each good result cost), so a report needs both, plus the number of retries behind them.
+
 **What it does not include.** A dispute escalated to a person has a human cost far larger than
 the model cost. Two companion metrics cover that: the share of disputes resolved without a
 person, and the share of automatic decisions later reversed.
 
 **What this repository does today.** `make eval-cluster` runs nine scenarios against the
-deployed system and reports it. Baseline: $0.1284 for nine attempts, nine successes, $0.0143 per
-success (ADR-0014). With one run per scenario this shows the mechanism; it is not yet a measured
-error rate.
+deployed system and reports total spending, successes, agent retries, cost per request, and cost
+per success (ADR-0014). With one run per scenario and no failures this shows the mechanism; it
+is not yet a measured error rate. Comparing retry policies is not possible yet: the retry limit
+is a constant in code, and without failures the two policies would score the same. That needs a
+configurable limit and deliberately injected failures (tracked as a GitHub issue).
 
 ## C. What to do when the evidence is not enough
 

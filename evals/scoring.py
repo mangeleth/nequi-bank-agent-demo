@@ -70,6 +70,13 @@ def tool_calls_correct(calls: list[dict], expected: dict, transaction_id: str) -
     return all_required_made and nothing_unexpected
 
 
+def agent_retries(body: dict) -> int:
+    """How many agent calls were repeats, read from the path the triage reported."""
+    steps = body.get("steps", [])
+    return sum(max(0, sum(1 for step in steps if step.startswith(agent)) - 1)
+               for agent in ("ledger_agent", "fraud_agent"))
+
+
 def evaluate(run: dict, scenario: dict) -> dict:
     """Score one run against its scenario."""
     expected, request = scenario["expected"], scenario["request"]
@@ -93,6 +100,7 @@ def evaluate(run: dict, scenario: dict) -> dict:
         "latency_ms": run["elapsed_ms"],
         "cost_usd": run["total_cost_usd"],  # includes retries: every model call in the trace
         "tokens": run["total_tokens"],
+        "agent_retries": agent_retries(body),
         "trace_complete": run.get("trace_complete", True),
         "groundedness": numeric_groundedness(_model_text(body), source_text) if expected["http_status"] == 200 else None,
         "actual": {
@@ -118,6 +126,10 @@ def summarize(results: list[dict]) -> dict:
         "task_success_rate": successes / count if count else None,
         "tool_call_correct_rate": sum(r["tool_call_correct"] for r in results) / count if count else None,
         "mean_groundedness": sum(grounded) / len(grounded) if grounded else None,
+        "successes": successes,
+        "agent_retries": sum(r["agent_retries"] for r in results),
+        # Report spending and cost per success together: a retry policy raises the first and
+        # can lower the second, and neither number alone shows whether it was worth it.
         "total_cost_usd": total_cost,
         "total_tokens": sum(r["tokens"] for r in results),
         "cost_per_request_usd": total_cost / count if count else None,

@@ -114,7 +114,9 @@ def markdown_report(results: list[dict], summary: dict, meta: dict) -> str:
         f"| Task success | {_fmt(summary['task_success_rate'])} |",
         f"| Tool calls correct | {_fmt(summary['tool_call_correct_rate'])} |",
         f"| Numeric groundedness (mean) | {_fmt(summary['mean_groundedness'])} |",
-        f"| Total cost | ${summary['total_cost_usd']:.4f} |",
+        f"| Successful scenarios | {summary['successes']} of {summary['scenarios']} |",
+        f"| Agent calls that were retries | {summary['agent_retries']} |",
+        f"| Total spending (all attempts, retries included) | ${summary['total_cost_usd']:.4f} |",
         f"| Cost per request | {_fmt(summary['cost_per_request_usd'], '${:.4f}')} |",
         f"| **Cost per success** | {_fmt(summary['cost_per_success_usd'], '${:.4f}')} |",
         f"| Total tokens | {summary['total_tokens']:,} |",
@@ -171,6 +173,7 @@ def main() -> int:
 
     print(f"\ntask success {_fmt(summary['task_success_rate'])}  |  tools correct {_fmt(summary['tool_call_correct_rate'])}"
           f"  |  groundedness {_fmt(summary['mean_groundedness'])}")
+    print(f"successes {summary['successes']}/{summary['scenarios']}  |  agent retries {summary['agent_retries']}")
     print(f"total ${summary['total_cost_usd']:.4f}  |  per request {_fmt(summary['cost_per_request_usd'], '${:.4f}')}"
           f"  |  per success {_fmt(summary['cost_per_success_usd'], '${:.4f}')}")
     print(f"report: {stem.with_suffix('.md').relative_to(ROOT.parent)}")
