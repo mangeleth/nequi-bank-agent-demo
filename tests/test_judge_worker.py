@@ -5,6 +5,7 @@ import asyncio
 from uuid import uuid4
 
 import fakeredis
+import pytest
 
 from services.judge.rubric import PROMPT_VERSION
 from services.judge.worker import JudgeWorker, case_for
@@ -24,7 +25,7 @@ class FakeEvidence:
     def __init__(self, fail_times: int = 0):
         self.calls, self.fail_times = 0, fail_times
 
-    async def for_dispute(self, user_id, transaction_id):
+    async def for_dispute(self, user_id, transaction_id, written_at=None):
         self.calls += 1
         if self.calls <= self.fail_times:
             raise RuntimeError("core systems unavailable")
@@ -164,3 +165,35 @@ async def test_a_malformed_redis_job_is_dropped():
     good = uuid4()
     await jobs.enqueue(good)
     assert (await asyncio.wait_for(first(jobs), 5)).dispute_id == good
+
+
+
+# --- Evidence as of when the explanation was written (found on the cluster) ----------------------
+
+from datetime import UTC, datetime, timedelta  # noqa: E402
+
+from services.judge.worker import as_of  # noqa: E402
+
+WRITTEN = datetime(2026, 10, 2, 18, 0, tzinfo=UTC)
+NOW_REVERSED = {"transaction_id": TX, "settlement_status": "reversed", "debited_amount": "50000.00",
+                "credited_amount": "50000.00", "failure_code": "PROCESSING_ERROR"}
+
+
+def refund(paid_at):
+    return {"refund_id": "RF-1", "amount": "50000.00", "executed_at": paid_at.isoformat()}
+
+
+def test_a_refund_paid_after_the_explanation_is_taken_out_of_the_evidence():
+    before, moment = as_of(NOW_REVERSED, refund(WRITTEN + timedelta(seconds=2)), WRITTEN)
+    assert (before["settlement_status"], before["credited_amount"]) == ("failed", "0.00")
+    assert "RF-1" in moment and "not included" in moment
+
+
+@pytest.mark.parametrize(("paid", "written"), [
+    (WRITTEN - timedelta(days=1), WRITTEN),  # refunded BEFORE: part of what the agents saw
+    (None, WRITTEN),  # never refunded
+    (WRITTEN + timedelta(seconds=2), None),  # unknown when it was written: no guessing
+])
+def test_otherwise_the_current_records_are_the_evidence(paid, written):
+    current, _ = as_of(NOW_REVERSED, refund(paid) if paid else None, written)
+    assert current == NOW_REVERSED
