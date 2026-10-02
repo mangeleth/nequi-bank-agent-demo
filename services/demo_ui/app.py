@@ -137,6 +137,10 @@ def dispute_form(slot: str) -> dict | None:
 
 def show_outcome(view: dict, progress_lines: list[str]) -> None:
     outcome = logic.read_outcome(view)
+    if summary := logic.decision_summary(view.get("result")):
+        with st.container(border=True):
+            st.markdown("**Resumen: quién decidió y cuándo**")
+            st.markdown("\n\n".join(summary))
     st.markdown("**Estados, tal como los vio la app**")
     st.markdown("\n".join(f"- {line}" for line in progress_lines) or "-")
     if outcome.path == "incident":

@@ -5,9 +5,8 @@
         evidence, read by code from Core Systems (the transaction and its risk signals)
     ask the judge; save its verdict next to the dispute; acknowledge the job
 
-It runs after the customer has their answer and never touches money. When the judge finds
-problems, the dispute is sent to customer service (a person); a dispute closed without a refund
-is reopened for review. A job that fails is
+It runs after the customer has their answer, never changes a decision, and never touches money.
+When the judge finds problems, the dispute is sent to customer service: people review it again. A job that fails is
 left unacknowledged and is retried (another worker can reclaim it); after its last attempt the
 dispute is recorded as "could not be judged".
 
@@ -31,9 +30,7 @@ from langchain_core.language_models import BaseChatModel
 from services.judge.judge import judge
 from services.judge.rubric import PROMPT_VERSION, JudgeCase
 from services.supervisor.judge_jobs import JudgeJob, JudgeJobs, build_judge_jobs
-from services.supervisor.messages import review_again_message
 from services.supervisor.store import DisputeRecord, DisputeStore, open_store
-from shared.schemas import DisputeStatus, TriageResult
 
 log = logging.getLogger("judge")
 
@@ -112,29 +109,14 @@ def problems(verdict: dict) -> str:
     return "; ".join(failed)[:500]
 
 
-async def send_to_customer_service(store: DisputeStore, record: DisputeRecord, verdict: dict) -> str:
-    """The judge found problems (or could not evaluate): a person must look (ADR-0026).
+async def send_to_customer_service(store: DisputeStore, record: DisputeRecord, verdict: dict) -> None:
+    """The judge found problems (or could not evaluate): the human agents review it again (ADR-0026).
 
-    It never touches money. A refund already approved or paid stays as it is; customer service
-    checks what the customer was told. A dispute CLOSED without a refund is reopened for review,
-    because that is where a wrong explanation can hide a wrong decision against the customer.
-    Returns what was done.
+    The decision is NOT changed: the dispute keeps its status, and money is never touched. It is
+    added to customer service's follow-up queue with the judge's reasons, and a person decides what
+    to do (for example contact the customer, or correct the explanation).
     """
-    reason = problems(verdict)
-    if record.business_status == DisputeStatus.CLOSED_NO_REFUND and record.result:
-        result = TriageResult.model_validate(record.result)
-        reopened = result.model_copy(update={
-            "status": DisputeStatus.PENDING_HUMAN_APPROVAL,
-            "escalation_reason": f"the AI judge found problems in the explanation: {reason}"[:1000],
-            "customer_message": review_again_message(result.ledger),
-            "steps": [*result.steps, "judge: problems found -> reopened for a person"],
-        })
-        await store.settle(record.dispute_id, expected=DisputeStatus.CLOSED_NO_REFUND, result=reopened,
-                           note="reopened: the AI judge found problems in the explanation")
-        await store.flag_follow_up(record.dispute_id, reason)
-        return "reopened"
-    await store.flag_follow_up(record.dispute_id, reason)
-    return "flagged"
+    await store.flag_follow_up(record.dispute_id, problems(verdict))
 
 
 class JudgeWorker:
@@ -159,8 +141,8 @@ class JudgeWorker:
             await self.store.save_judgement(job.dispute_id, verdict.model_dump(), passed=verdict.passed,
                                             prompt_version=PROMPT_VERSION)
             if not verdict.passed:
-                done = await send_to_customer_service(self.store, record, verdict.model_dump())
-                log.warning("dispute %s sent to customer service (%s)", job.dispute_id, done)
+                await send_to_customer_service(self.store, record, verdict.model_dump())
+                log.warning("dispute %s sent to customer service: the judge found problems", job.dispute_id)
             await self.jobs.ack(job)
             log.info("judged dispute %s: %s", job.dispute_id, "pass" if verdict.passed else "FAIL")
         except Exception as exc:

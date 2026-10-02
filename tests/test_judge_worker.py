@@ -229,17 +229,18 @@ async def judged(store, dispute_id, script, evidence=None):
                             evidence=evidence or FakeEvidence()), jobs)
 
 
-async def test_a_closed_dispute_with_a_bad_explanation_is_reopened_for_a_person():
+async def test_a_bad_explanation_goes_to_customer_service_and_the_decision_is_not_changed():
     store = InMemoryDisputeStore()
     dispute_id = await finished_dispute(store, explanation="It failed for insufficient funds; no refund is due.")
+    before = await store.load(dispute_id)
     await judged(store, dispute_id, [verdict_call(grounded=False)])
 
-    record = await store.load(dispute_id)
-    assert record.business_status == DisputeStatus.PENDING_HUMAN_APPROVAL  # back with a person
-    assert "the AI judge found problems" in record.result["escalation_reason"]
-    assert "reviewing your dispute again" in record.customer_message
-    assert [r.dispute_id for r in await store.review_queue()] == [dispute_id]
-    assert [f["dispute_id"] for f in await store.follow_ups()] == [dispute_id]
+    after = await store.load(dispute_id)
+    assert (after.business_status, after.customer_message, after.result) == (
+        before.business_status, before.customer_message, before.result)  # the decision is untouched
+    assert await store.review_queue() == []  # not reopened
+    (follow_up,) = await store.follow_ups()
+    assert follow_up["dispute_id"] == dispute_id and follow_up["reason"].startswith("groundedness:")
 
 
 async def test_a_paid_refund_with_a_bad_explanation_keeps_its_money_and_goes_to_customer_service():

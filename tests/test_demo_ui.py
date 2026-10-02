@@ -309,3 +309,31 @@ def test_the_judge_health_reads_every_calibration_run():
     assert {r["prompt"] for r in rows} >= {"v1", "v2", "v3"}
     assert {r["split"] for r in rows} == {"tuning", "held-out"}
     assert all(0 <= r["agreement"] <= 1 and r["unsafe_passes"] >= 0 for r in rows)
+
+
+def test_the_summary_says_who_decided_and_when_in_colombia_time():
+    reviewed = {"review": {"decision": "approve", "reviewer_id": "ops-ana", "note": "verificado en el libro",
+                           "decided_at": "2026-10-02T18:32:53Z", "amount": "450000.00"},
+                "approval": {"route": "human_approved", "approved_amount": "450000.00"},
+                "payment": {"amount": "450000.00", "currency": "COP", "refund_id": "RF-7012",
+                            "executed_at": "2026-10-02T18:32:54Z"}}
+    approved, paid = logic.decision_summary(reviewed)
+    assert "Aprobada por una persona" in approved and "**ops-ana**" in approved
+    assert "el 02/10/2026 a las 13:32 (hora de Colombia)" in approved  # 18:32 UTC is 13:32 in Bogotá
+    assert "450000.00 COP" in approved and "verificado en el libro" in approved
+    assert "RF-7012" in paid and "13:32" in paid
+
+    rejected = logic.decision_summary({"review": {"decision": "reject", "reviewer_id": "ops-luis", "note": "ya llegó",
+                                                  "decided_at": "2026-10-02T15:00:00Z"}})
+    assert rejected == ["👤 **Rechazada por una persona:** **ops-luis** el 02/10/2026 a las 10:00 (hora de Colombia). "
+                        "Motivo: “ya llegó”."]
+
+
+def test_the_summary_for_the_policy_and_for_an_incident():
+    auto = logic.decision_summary({"approval": {"route": "auto_approved", "approved_amount": "50000.00",
+                                                "evaluated_at": "2026-10-02T17:00:00Z"}})
+    assert auto[0].startswith("⚙️ **Aprobada automáticamente**") and "12:00 (hora de Colombia)" in auto[0]
+    covered = logic.decision_summary({"incident": {"incident_id": "INC-20261001-01", "confirmed_by": "operations-lead"},
+                                      "verdict": {"decided_at": "2026-10-02T17:00:00Z"}})
+    assert "INC-20261001-01" in covered[0] and "sin un modelo" in covered[0]
+    assert logic.decision_summary(None) == []

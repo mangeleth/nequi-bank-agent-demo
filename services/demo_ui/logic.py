@@ -15,7 +15,7 @@ import os
 import statistics
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -515,3 +515,48 @@ def load_calibrations(results_dir: Path) -> list[dict]:
                 row[f"{name}_unsafe"] = c["unsafe_passes"]
             rows.append(row)
     return rows
+
+
+# --- Who decided, and when: the summary at the top of an outcome -----------------------------------
+
+COLOMBIA = timezone(timedelta(hours=-5), "COT")  # UTC-5 all year: Colombia has no daylight saving
+
+
+def colombia_time(iso: str | None) -> str:
+    if not iso:
+        return "—"
+    moment = datetime.fromisoformat(str(iso).replace("Z", "+00:00")).astimezone(COLOMBIA)
+    return f"el {moment:%d/%m/%Y} a las {moment:%H:%M} (hora de Colombia)"
+
+
+def decision_summary(result: dict | None) -> list[str]:
+    """Who decided what, and when, in plain words: the person, the policy, or a confirmed incident,
+    and when the money was paid. Read from the stored result, so it is what really happened."""
+    result = result or {}
+    review, approval = result.get("review"), result.get("approval") or {}
+    verdict, incident, payment = result.get("verdict") or {}, result.get("incident"), result.get("payment")
+    lines = []
+    if incident:
+        lines.append(f"⚡ **Decidida por código**, sin un modelo: cubierta por el incidente confirmado "
+                     f"{incident['incident_id']} (confirmado por {incident['confirmed_by']}) "
+                     f"{colombia_time(verdict.get('decided_at'))}.")
+    if review:
+        who, when = f"**{review['reviewer_id']}**", colombia_time(review["decided_at"])
+        if review["decision"] == "approve":
+            lines.append(f"👤 **Aprobada por una persona:** {who} {when}, por {review['amount']} COP. "
+                         f"Motivo: “{review['note']}”.")
+        else:
+            lines.append(f"👤 **Rechazada por una persona:** {who} {when}. Motivo: “{review['note']}”.")
+    elif approval.get("route") == "auto_approved":
+        lines.append(f"⚙️ **Aprobada automáticamente** por la política de reembolsos (código) "
+                     f"{colombia_time(approval.get('evaluated_at'))}, por {approval.get('approved_amount')} COP.")
+    elif approval.get("route") == "human_required" or result.get("status") == "pending_human_approval":
+        lines.append(f"👤 **Esperando la decisión de una persona** desde "
+                     f"{colombia_time(approval.get('evaluated_at') or verdict.get('decided_at'))[3:]}.")
+    elif verdict.get("decision") == "no_action" and not incident:
+        lines.append(f"📁 **Cerrada sin reembolso** por la recomendación de los agentes y la política "
+                     f"{colombia_time(verdict.get('decided_at'))}.")
+    if payment:
+        lines.append(f"💸 **Pagada** por el libro contable {colombia_time(payment['executed_at'])}: "
+                     f"{payment['amount']} {payment['currency']}, reembolso `{payment['refund_id']}`.")
+    return lines
