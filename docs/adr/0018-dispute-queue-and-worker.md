@@ -53,6 +53,15 @@ signing key, tracing keys).
   runs, where the worker runs inside the API process) and the Service Bus adapter, which has its
   own tests against the real service on a separate queue.
 
+## Verified on the cluster
+| Test | Result |
+|---|---|
+| Both workers deleted politely during a run | The run finished in 9 s within the shutdown grace; one attempt |
+| Both workers force-killed during a run | Redelivered exactly 5 minutes after the run started; a new worker took over and finished it; two attempts |
+| A dispute whose stored request cannot be read | Two deliveries 2 s apart, then the dead-letter queue; the dispute went to a person |
+
+Repeatable with `make failure-tests` and `make failure-test-kill` (`scripts/failure_tests.py`).
+
 ## Consequences
 - + A worker can die at any point and the dispute is still finished by another, without a person.
 - + The exposed process can add work to the queue and nothing else.

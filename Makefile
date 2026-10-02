@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: test-db test-servicebus venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster redis-image postgres-image postgres-password signing-key signing-grant signing-key-publish servicebus-create sb-grant demo-reset test guard-clean validate build push deploy smoke release
+.PHONY: test-db test-servicebus venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster failure-tests failure-test-kill redis-image postgres-image postgres-password signing-key signing-grant signing-key-publish servicebus-create sb-grant demo-reset test guard-clean validate build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -339,6 +339,23 @@ eval-cluster:
 	@sleep 4
 	@$(MAKE) --no-print-directory eval SUPERVISOR_URL=http://127.0.0.1:18004 EVAL_LABEL=aks; status=$$?; \
 		kill $$(cat .local/port-forward.pid) 2>/dev/null; rm -f .local/port-forward.pid; exit $$status
+
+# ---------------------------------------------------------------------------------------------
+# Failure tests on the deployed system (ADR-0018)
+# ---------------------------------------------------------------------------------------------
+FAILURE_TEST = mkdir -p .local; \
+	kubectl port-forward -n $(K8S_NAMESPACE) svc/supervisor 18004:80 >/dev/null 2>&1 & echo $$! > .local/port-forward.pid; \
+	sleep 4; status=0; for t in $(1); do .venv/bin/python scripts/failure_tests.py $$t || status=1; \
+		kubectl rollout status deployment/triage-worker -n $(K8S_NAMESPACE) --timeout=180s >/dev/null; done; \
+	kill $$(cat .local/port-forward.pid) 2>/dev/null; rm -f .local/port-forward.pid; exit $$status
+
+## A polite worker stop (as in a deploy) and a poison message
+failure-tests:
+	@$(call FAILURE_TEST,graceful poison)
+
+## Force-kill the workers mid-run and wait for the queue to redeliver (about 5 minutes)
+failure-test-kill:
+	@$(call FAILURE_TEST,kill)
 
 # ---------------------------------------------------------------------------------------------
 # Delivery (ADR-0004): make release SERVICE=core-systems

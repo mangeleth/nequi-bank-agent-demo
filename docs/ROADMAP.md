@@ -77,7 +77,9 @@ Planned steps:
   - Disputes wait in an Azure Service Bus queue (a message is only the dispute ID; at most 2
     deliveries, then the dead-letter queue). A `triage-worker` deployment runs them.
   - The intake API may only send to the queue; the worker may only receive.
-  - Still to do: failure tests on the cluster (a killed worker, a poison message).
+  - Verified on the cluster: a polite worker stop, a force-killed worker (the dispute is
+    finished by another worker after the 5-minute lock), and a poison message (dead-lettered
+    after two deliveries).
 - **Step 11:** refund execution in Core Systems (the first ledger write) with an idempotency
   key, and the rate-limited approval drain with a dead-letter queue.
 - **Step 12:** known-incident fast path: an incident registry in Core Systems, the check at

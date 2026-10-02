@@ -143,6 +143,55 @@ can reach, may add to the queue and nothing else: it has no model access and can
 If a worker dies mid-run, the queue hands the dispute to another; after two failed deliveries it
 goes to a person.
 
+## What happens when a worker dies
+
+Receiving a message does **not** remove it from the queue. The message is only *locked*, which
+hides it from other workers. It is removed when the worker calls `complete`. This mode is called
+**peek-lock**, and it is why a dispute survives a worker that crashes
+([ADR-0018](docs/adr/0018-dispute-queue-and-worker.md)).
+
+```mermaid
+sequenceDiagram
+    participant Q as Service Bus queue
+    participant A as worker A
+    participant B as worker B
+    participant DB as PostgreSQL
+
+    Q->>A: deliver dispute ID (delivery 1), lock for 5 minutes
+    A->>DB: queued → running
+    Note over A: worker A crashes mid-run
+    Note over Q: the message still exists, hidden by its lock
+    Note over Q: 5 minutes later the lock expires
+    Q->>B: deliver the same ID (delivery 2)
+    B->>DB: take over: running → running, attempt 2
+    B->>DB: running → finished
+    B->>Q: complete (now the message is removed)
+```
+
+- The rules belong to the queue, not to our code: a 5-minute lock and at most 2 deliveries. A
+  crashed worker runs no code, so nothing that recovers its work can depend on code it runs.
+- After the second failed delivery the message moves to the **dead-letter queue** and the dispute
+  goes to a person.
+- A message carries only the dispute ID, and a status changes only from the status it is expected
+  to be in, so a message delivered twice cannot finish a dispute twice.
+
+Measured on the cluster (`make failure-tests`, `make failure-test-kill`):
+
+| Test | What was done | Result |
+|---|---|---|
+| Polite stop (a deploy) | Deleted both worker pods while a run was in progress | The run finished in 9 s: the worker stops taking messages and gets 30 s to finish. One attempt, no retry. |
+| Crash | Force-killed both worker pods mid-run | The customer kept seeing "We're checking the records". Exactly 5 minutes after the run started the queue redelivered, a new worker took over, and the dispute finished. Two attempts, no person needed. |
+| Poison message | Queued a dispute whose stored request cannot be read | Tried twice, 2 s apart; then the message went to the dead-letter queue and the dispute to a person. |
+
+The audit trail of the crash test, from the `dispute_events` table:
+
+```
+13:31:44  queued    received       dispute received
+13:31:44  running   investigating  run started
+13:36:44  running   investigating  run restarted after a failed delivery
+13:36:54  finished  refund_approved  run finished
+```
+
 ## The supervisor graph
 
 The supervisor works in a loop: it asks one specialist for evidence, reads the answer, and
