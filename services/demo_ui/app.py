@@ -91,7 +91,7 @@ def show_trace(dispute_id: str, trace_url: str, steps: list[str]) -> None:
         x=alt.X("inicio:Q", title="milisegundos desde el inicio de la ejecución"), x2="fin:Q",
         color=alt.Color("tipo:N", scale=alt.Scale(domain=[TYPE_NAMES[t] for t in TYPE_COLOURS],
                                                   range=list(TYPE_COLOURS.values())),
-                        legend=alt.Legend(title=None, orient="top")),
+                        legend=alt.Legend(title=None, orient="bottom", columns=2)),
         tooltip=["paso", "tipo", "inicio", "fin", "tokens", "costo"],
     ).properties(height=max(180, 30 * len(timeline)))
     st.altair_chart(chart, width="stretch")
