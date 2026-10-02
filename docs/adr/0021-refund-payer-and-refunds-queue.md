@@ -39,6 +39,13 @@ After ADR-0020 the triage worker paid a refund right after deciding it. That had
 - **Duplicates are harmless.** The payer only pays a dispute that is finished and still
   `refund_approved`; anything else is completed without action. The ledger pays a key only once.
 
+## Verified on the cluster
+| Test | Result |
+|---|---|
+| Evaluation through intake, both queues, worker, and payer | 10 of 10; one ledger refund per paid transaction; paid 0.8 s after the decision was saved |
+| Pause: `REFUND_PAYMENTS_PAUSED=true`, then a dispute | Approved; 10 s later still `refund_approved`, "not been paid yet"; 1 message waiting in `refunds`; 0 ledger refunds |
+| Unpause | Paid 0.4 s after the payer restarted; 1 ledger refund |
+
 ## Consequences
 - + The ledger's write rate is a setting, not a side effect of how fast triage runs.
 - + Payments can be held during an incident without stopping triage or losing work.
