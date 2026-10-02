@@ -140,34 +140,48 @@ twice, even if a dispute and the batch try at the same moment.
 
 ## Architecture
 
+Two views: the path of a dispute from the customer to the payment, and what happens after the
+decision (the LLM judge and the people).
+
+### 1. From the customer to the payment
+
 ```mermaid
 flowchart LR
-    app["📱 Customer app"]
+    visitor["🌐 Browser"]
 
     subgraph aks["AKS cluster · namespace disputes"]
         direction LR
+        ui["<b>demo-ui</b><br/>customer app<br/>+ reviewer tab"]
         sup["<b>supervisor</b><br/>intake API + safety gate<br/><i>no model access</i>"]
         redis[("<b>redis</b><br/>duplicate check")]
-        pg[("<b>postgres</b><br/>dispute records")]
-        worker["<b>triage-worker</b><br/>supervisor graph<br/>+ refund policy"]
+        pg[("<b>postgres</b><br/>disputes · ledger")]
+        worker["<b>triage-worker</b><br/>incident check, then<br/>supervisor graph + policy"]
         ledger["<b>ledger-agent</b>"]
         fraud["<b>fraud-agent</b>"]
-        core["<b>core-systems</b><br/>Core Banking<br/>+ Risk Engine"]
+        core["<b>core-systems</b><br/>Core Banking + Risk Engine<br/>+ incident registry"]
+        payer["<b>refund-payer</b><br/>fixed pace<br/><i>no model access</i>"]
     end
 
-    sb["<b>Service Bus</b><br/>dispute queue"]
+    sbd["<b>Service Bus</b><br/>disputes queue"]
+    sbr["<b>Service Bus</b><br/>refunds queue"]
     aoai["<b>Azure OpenAI</b><br/>gpt-4o"]
 
-    app -- "1 submit<br/>(202), then<br/>check status" --> sup
+    visitor -- "public link" --> ui
+    ui -- "1 submit, then<br/>check status" --> sup
     sup -- "2 duplicate?" --> redis
     sup -- "3 store" --> pg
-    sup -- "4 send ID" --> sb
-    sb -- "5 deliver" --> worker
-    worker -- "6 ask" --> ledger
-    worker -- "6 ask" --> fraud
+    sup -- "4 send ID" --> sbd
+    sbd -- "5 deliver" --> worker
+    worker -- "6 known incident?<br/>(code, no model)" --> core
+    worker -- "7 or ask" --> ledger
+    worker -- "7 or ask" --> fraud
     ledger -- "MCP" --> core
     fraud -- "REST" --> core
-    worker -- "7 save result" --> pg
+    worker -- "8 save decision" --> pg
+    worker -- "9 approved: send ID" --> sbr
+    sup -. "9 a person approved" .-> sbr
+    sbr -- "10 deliver" --> payer
+    payer -- "11 pay once<br/>(idempotency key)" --> core
     worker -.-> aoai
     ledger -.-> aoai
     fraud -.-> aoai
@@ -176,35 +190,98 @@ flowchart LR
     classDef det fill:#e8f4ff,stroke:#2b7bd6,color:#222
     classDef ext fill:#f4f4f4,stroke:#888,color:#222
     class worker,fraud,ledger llm
-    class sup,core,redis,pg det
-    class app,aoai,sb ext
+    class sup,core,redis,pg,payer,ui det
+    class visitor,aoai,sbd,sbr ext
 ```
 
 🟧 Orange = services that call a model · 🟦 Blue = deterministic services · dotted = model calls.
 
-The path of one dispute:
-
-1. The customer submits it and gets `202 Accepted` in about 0.3 seconds; the app then checks its status.
-2. Redis answers "is this a duplicate?" (one key per customer and transaction).
+1. The customer submits a dispute in the app and gets `202 Accepted` in about 0.3 seconds; the app
+   then follows its status.
+2. Redis answers "is this a duplicate?" (one key per customer and transaction,
+   [ADR-0015](docs/adr/0015-deduplication-gate.md)).
 3. PostgreSQL stores the dispute; its unique key is the guarantee behind step 2.
-4. The supervisor puts the dispute's ID on the queue. That is all it is allowed to do with it.
-5. The queue delivers the ID to a worker. If that worker dies, the queue delivers it to another.
-6. The worker runs the supervisor graph: it asks the Ledger Agent and the Fraud Agent, which read Core Systems.
-7. The worker saves the result on the dispute, where the customer's app reads it.
+4. The intake API puts the dispute's ID on the disputes queue. That is all it may do with it.
+5. The queue delivers the ID to a triage worker; if that worker dies, to another
+   ([ADR-0018](docs/adr/0018-dispute-queue-and-worker.md)).
+6. A confirmed incident covers the transfer? Then code decides it, with **no model**
+   ([ADR-0022](docs/adr/0022-known-incident-fast-path.md)).
+7. Otherwise the supervisor graph asks the Ledger and Fraud agents, which read Core Systems.
+8. The model recommends; the refund policy (code) decides; the decision is saved first.
+9. An approved refund's ID goes on the refunds queue, from the worker or, after a person approves
+   it, from the intake API ([ADR-0027](docs/adr/0027-human-review.md)).
+10. The refund payer takes it at a fixed pace, and can be paused
+    ([ADR-0021](docs/adr/0021-refund-payer-and-refunds-queue.md)).
+11. The ledger pays it exactly once: one idempotency key per dispute, one refund per transaction
+    ([ADR-0019](docs/adr/0019-shared-ledger-in-postgresql.md),
+    [ADR-0020](docs/adr/0020-paying-approved-refunds.md)).
 
-Supporting services, not drawn above:
+### 2. After the decision: the judge and the people
+
+```mermaid
+flowchart LR
+    worker["<b>triage-worker</b><br/>a dispute finished"]
+    stream[("<b>redis stream</b><br/>judge-jobs")]
+    judge["<b>judge</b><br/>LLM judge"]
+    core["<b>core-systems</b><br/>the records,<br/>read by code"]
+    aoai["<b>Azure OpenAI</b>"]
+    pg[("<b>postgres</b><br/>verdicts · follow-ups<br/>· human labels")]
+    review["👤 <b>Review queue</b><br/>a person decides:<br/>approve or reject"]
+    cs["🛎️ <b>Customer service</b><br/>a person re-assesses<br/>the explanation"]
+    dash["📊 <b>Dashboard</b><br/>judge vs. people"]
+
+    worker -- "a model wrote<br/>the explanation" --> stream
+    stream --> judge
+    judge -- "evidence as of<br/>when it was written" --> core
+    judge -.-> aoai
+    judge -- "verdict" --> pg
+    pg -- "FAIL, or 10% of PASS<br/>(control sample)" --> cs
+    pg -- "pending_human_approval" --> review
+    cs -- "human label" --> dash
+
+    classDef llm fill:#fff4e5,stroke:#e69500,color:#222
+    classDef det fill:#e8f4ff,stroke:#2b7bd6,color:#222
+    classDef human fill:#fdecec,stroke:#d0453f,color:#222
+    classDef ext fill:#f4f4f4,stroke:#888,color:#222
+    class worker,judge llm
+    class core,pg,stream,dash det
+    class review,cs human
+    class aoai ext
+```
+
+- The **LLM judge** grades every explanation a model wrote against the records (groundedness,
+  completeness, clarity), in the background, calibrated against labelled cases
+  ([ADR-0026](docs/adr/0026-llm-judge.md)).
+- **It never changes a decision or touches money.** A FAIL, or a random 10% of PASSes, goes to
+  customer service, where a person re-assesses the explanation; their answer is a human label for
+  measuring the judge. The customer never sees this.
+- The **review queue** is different: there a person makes the decision the system could not
+  (over the limit, high risk), and approving pays what the ledger shows owed.
+
+### Deployments
+
+| Deployment | Replicas | Calls a model | May | Public |
+|---|---|---|---|---|
+| `demo-ui` | 1 | no | call the intake API; read the demo login key and the Langfuse keys | **yes**, the only one ([ADR-0024](docs/adr/0024-public-demo-ui.md)) |
+| `supervisor` (intake API) | 2 | no | send to both queues; read the database password | no |
+| `triage-worker` | 2 | yes | receive disputes, send refunds, sign delegated tokens, queue judge jobs | no (no Service) |
+| `fraud-agent`, `ledger-agent` | 2 each | yes | read Core Systems for one customer and one transaction | no |
+| `core-systems` | 2 | no | read and write the ledger | no |
+| `refund-payer` | 1 (the pace is per process) | no | receive refunds; call the refund endpoint | no (no Service) |
+| `judge` | 1 | yes | receive judge jobs; read Core Systems; write verdicts | no (no Service) |
+| `postgres`, `redis` | 1 each | no | | no |
+
+Each has its own identity with only these permissions, runs as non-root with a read-only
+filesystem, and two-replica services spread across both nodes.
+
+Supporting services:
 
 | Service | Used by | For |
 |---|---|---|
-| **Key Vault** | supervisor, triage-worker, both agents, postgres | Secrets mounted as files (database password, Langfuse keys), and the key that signs the worker's own tokens, which never leaves Key Vault |
-| **Langfuse Cloud** | triage-worker, both agents | One trace per dispute: decisions, tool calls, tokens, cost |
+| **Key Vault** | every pod that needs a secret | Secrets mounted as files, and the key that signs the worker's own tokens, which never leaves Key Vault |
+| **Langfuse Cloud** | triage-worker, both agents, the UI (reads) | One trace per dispute: decisions, tool calls, tokens, cost |
 | **Container Registry** | the cluster | Images tagged with the git commit |
 | **Entra ID (Workload Identity)** | every pod that calls Azure | Login to Azure OpenAI, Key Vault, and Service Bus with no stored Azure keys |
-
-Planned in Milestone 6: refund execution in Core Systems, and a known-incident registry.
-
-Every service runs as two pods on separate nodes (Redis and PostgreSQL as one), non-root, with a
-read-only filesystem.
 
 A dispute passes the **safety gate** first: one key per customer and transaction, so ten taps on
 "Dispute" create one dispute and run one triage ([ADR-0015](docs/adr/0015-deduplication-gate.md)).
