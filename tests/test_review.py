@@ -137,3 +137,25 @@ def test_a_customer_still_cannot_read_another_customers_dispute():
     with Bank() as bank:
         dispute_id = bank.dispute_waiting_for_a_person()
         assert bank.http.get(f"{URL}/{dispute_id}", headers=bearer("user-1002")).status_code == 404
+
+
+def test_customer_service_sees_and_resolves_what_the_judge_flagged():
+    with Bank() as bank:
+        dispute_id = bank.dispute_waiting_for_a_person()
+        store = bank.app.state.store
+        import asyncio as _asyncio
+        from uuid import UUID as _UUID
+
+        _asyncio.run(store.flag_follow_up(_UUID(dispute_id), "groundedness: invented cause"))
+        open_ = bank.http.get("/v1/reviews/follow-ups", headers=reviewer_headers()).json()
+        customer = bank.http.get("/v1/reviews/follow-ups", headers=bearer("user-1001"))
+        done = bank.http.post(f"/v1/reviews/follow-ups/{dispute_id}/resolve",
+                              json={"note": "called the customer and corrected it"}, headers=reviewer_headers())
+        again = bank.http.post(f"/v1/reviews/follow-ups/{dispute_id}/resolve",
+                               json={"note": "a second time"}, headers=reviewer_headers())
+        after = bank.http.get("/v1/reviews/follow-ups", headers=reviewer_headers()).json()
+
+    assert [(f["dispute"]["dispute_id"], f["reason"]) for f in open_] == [(dispute_id, "groundedness: invented cause")]
+    assert customer.status_code == 401  # customer service is reviewers only
+    assert done.status_code == 200 and done.json()["resolved_by"] == "ops-ana"
+    assert again.status_code == 409 and after == []

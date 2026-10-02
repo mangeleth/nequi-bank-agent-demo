@@ -100,3 +100,9 @@ def human_approved_message(ledger: LedgerReconciliation | None, amount) -> str:
 def human_rejected_message(ledger: LedgerReconciliation | None) -> str:
     action = "A person reviewed your dispute and decided that no refund is due."
     return f"{_records(ledger)} {action}" if ledger is not None else action
+
+
+def review_again_message(ledger: LedgerReconciliation | None) -> str:
+    """A closed dispute reopened because its explanation failed the quality check (ADR-0026)."""
+    action = "We are reviewing your dispute again, so the case is marked for review by a person."
+    return f"{_records(ledger)} {action}" if ledger is not None else action

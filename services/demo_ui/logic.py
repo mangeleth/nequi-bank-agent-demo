@@ -432,6 +432,13 @@ class ReviewClient:
     def judgements(self, token: str) -> list[dict]:
         return self._get(token, "/v1/reviews/judgements")
 
+    def follow_ups(self, token: str) -> list[dict]:
+        return self._get(token, "/v1/reviews/follow-ups")
+
+    def resolve(self, token: str, dispute_id: str, note: str) -> httpx.Response:
+        return self._http.post(f"/v1/reviews/follow-ups/{dispute_id}/resolve", json={"note": note},
+                               headers={"Authorization": f"Bearer {token}"})
+
     def decide(self, token: str, dispute_id: str, decision: str, note: str) -> httpx.Response:
         return self._http.post(f"/v1/reviews/disputes/{dispute_id}/decision", json={"decision": decision, "note": note},
                                headers={"Authorization": f"Bearer {token}"})

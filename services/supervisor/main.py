@@ -88,6 +88,14 @@ class ReviewRequest(BaseModel):
     note: str = Field(min_length=5, max_length=500)
 
 
+class FollowUpDone(BaseModel):
+    """What customer service did about it, for the audit trail."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    note: str = Field(min_length=5, max_length=500)
+
+
 def build_queue() -> DisputeQueue:
     """Choose the queue from QUEUE_BACKEND: `memory` (default; the worker runs in this process)
     or `servicebus` (the worker is a separate deployment)."""
@@ -313,6 +321,23 @@ def create_app(
             raise HTTPException(503, "the ledger is unavailable; try again") from exc
         log.info("dispute %s: %s by %s", dispute_id, body.decision, who.reviewer_id)
         return (await state.store.load(dispute_id)).view()
+
+    @app.get("/v1/reviews/follow-ups")
+    async def follow_ups(request: Request, who: Reviewer) -> list[dict]:
+        """Disputes the LLM judge sent to customer service (ADR-0026), oldest first."""
+        state = request.app.state
+        items = []
+        for follow_up in await state.store.follow_ups():
+            record = await state.store.load(follow_up["dispute_id"])
+            items.append(jsonable_encoder(follow_up) | await _review_item(state, record))
+        return items
+
+    @app.post("/v1/reviews/follow-ups/{dispute_id}/resolve")
+    async def resolve_follow_up(dispute_id: UUID, body: FollowUpDone, request: Request, who: Reviewer) -> dict:
+        if not await request.app.state.store.resolve_follow_up(dispute_id, who.reviewer_id, body.note):
+            raise HTTPException(409, "there is no open follow-up for this dispute")
+        log.info("follow-up of dispute %s done by %s", dispute_id, who.reviewer_id)
+        return {"dispute_id": str(dispute_id), "resolved_by": who.reviewer_id}
 
     @app.get("/v1/reviews/judgements")
     async def recent_judgements(request: Request, who: Reviewer) -> list[dict]:

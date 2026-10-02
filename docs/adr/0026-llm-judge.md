@@ -30,7 +30,14 @@ person who reviews the dispute.
 - **Tuning discipline.** The prompt is changed only because of **tuning** cases. A held-out case whose
   failure is used to change the prompt is moved to tuning, and new held-out cases are written. So
   the held-out numbers keep measuring generalization.
-- **It never blocks or changes a decision.** It measures quality and raises alerts.
+- **It never touches money, and it can only send a case to a person.** When the verdict needs
+  revision (any criterion FAIL) or the explanation could not be judged, the dispute goes to
+  **customer service**: a follow-up queue in the reviewers' tab, with the judge's reasons, what
+  the customer was told, and a required note when it is handled. A dispute **closed without a
+  refund** is also **reopened** (back to `pending_human_approval`, in the review queue), because
+  a wrong explanation there can hide a wrong decision against the customer. A refund already
+  approved or paid stays as it is. Sending to a person is the safe direction: the judge's false
+  alarms (about 6% on the calibration set) cost a person's time, never a customer's money.
 - The judge is the same model family as the candidates (gpt-4o, temperature 0). Same-family judges
   can share blind spots (see the production delta).
 

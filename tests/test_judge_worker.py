@@ -37,13 +37,14 @@ def verdict_call(grounded=True):
                    completeness={"passed": True, "reason": "ok"}, clarity={"passed": True, "reason": "ok"}))
 
 
-async def finished_dispute(store, *, explanation="It failed with a processing error.", incident=None):
+async def finished_dispute(store, *, explanation="It failed with a processing error.", incident=None,
+                           status=DisputeStatus.CLOSED_NO_REFUND):
     dispute_id = uuid4()
     request = DisputeRequest(transaction_id=TX, reason="failed_transfer", claimed_amount="50000.00")
     await store.create(dispute_id=dispute_id, dispute_key=f"k:{dispute_id}", user_id="user-1001",
                        request=request, customer_message="received")
     await store.start(dispute_id, "checking")
-    result = {"dispute_id": dispute_id, "transaction_id": TX, "status": DisputeStatus.CLOSED_NO_REFUND,
+    result = {"dispute_id": dispute_id, "transaction_id": TX, "status": status,
               "customer_message": "m", "steps": []}
     if explanation:
         result["verdict"] = {"dispute_id": dispute_id, "transaction_id": TX, "decision": "no_action",
@@ -73,7 +74,6 @@ async def test_the_worker_grades_and_stores_the_verdict():
 
     stored = await store.judgement(dispute_id)
     assert (stored["passed"], stored["prompt_version"]) == (False, PROMPT_VERSION)
-    assert (await store.load(dispute_id)).business_status == DisputeStatus.CLOSED_NO_REFUND  # untouched
     shown = model.everything_shown_to_model()
     assert "PROCESSING_ERROR" in shown and "It failed with a processing error." in shown  # evidence and answer
 
@@ -216,3 +216,63 @@ async def test_the_consumer_survives_redis_being_flushed():
     await asyncio.sleep(0.2)  # the consumer hits NOGROUP and recreates the group
     await jobs.enqueue(after)
     assert (await asyncio.wait_for(task, 5)).dispute_id == after
+
+
+
+# --- A verdict that needs revision goes to customer service (ADR-0026) -----------------------------
+
+
+async def judged(store, dispute_id, script, evidence=None):
+    jobs = InMemoryJudgeJobs()
+    await jobs.enqueue(dispute_id)
+    await drain(JudgeWorker(store=store, jobs=jobs, model=ScriptedChatModel(script=script),
+                            evidence=evidence or FakeEvidence()), jobs)
+
+
+async def test_a_closed_dispute_with_a_bad_explanation_is_reopened_for_a_person():
+    store = InMemoryDisputeStore()
+    dispute_id = await finished_dispute(store, explanation="It failed for insufficient funds; no refund is due.")
+    await judged(store, dispute_id, [verdict_call(grounded=False)])
+
+    record = await store.load(dispute_id)
+    assert record.business_status == DisputeStatus.PENDING_HUMAN_APPROVAL  # back with a person
+    assert "the AI judge found problems" in record.result["escalation_reason"]
+    assert "reviewing your dispute again" in record.customer_message
+    assert [r.dispute_id for r in await store.review_queue()] == [dispute_id]
+    assert [f["dispute_id"] for f in await store.follow_ups()] == [dispute_id]
+
+
+async def test_a_paid_refund_with_a_bad_explanation_keeps_its_money_and_goes_to_customer_service():
+    store = InMemoryDisputeStore()
+    dispute_id = await finished_dispute(store, status=DisputeStatus.REFUND_PAID)
+    await judged(store, dispute_id, [verdict_call(grounded=False)])
+
+    assert (await store.load(dispute_id)).business_status == DisputeStatus.REFUND_PAID  # money untouched
+    (follow_up,) = await store.follow_ups()
+    assert follow_up["dispute_id"] == dispute_id and follow_up["reason"].startswith("groundedness: checked")
+
+
+async def test_a_good_explanation_goes_nowhere():
+    store = InMemoryDisputeStore()
+    dispute_id = await finished_dispute(store)
+    await judged(store, dispute_id, [verdict_call(grounded=True)])
+
+    assert (await store.load(dispute_id)).business_status == DisputeStatus.CLOSED_NO_REFUND
+    assert await store.follow_ups() == [] and await store.review_queue() == []
+
+
+async def test_an_explanation_that_could_not_be_judged_also_goes_to_customer_service():
+    store, jobs = InMemoryDisputeStore(), InMemoryJudgeJobs()
+    dispute_id = await finished_dispute(store, status=DisputeStatus.REFUND_PAID)
+    await jobs.enqueue(dispute_id)
+    worker = JudgeWorker(store=store, jobs=jobs, model=ScriptedChatModel(script=[verdict_call()]),
+                         evidence=FakeEvidence(fail_times=99))
+    task = asyncio.create_task(worker.run_forever())
+    for _ in range(jobs_module.MAX_ATTEMPTS):
+        await asyncio.sleep(0.02)
+        await jobs.reclaim()
+    await asyncio.sleep(0.02)
+    task.cancel()
+
+    (follow_up,) = await store.follow_ups()
+    assert "could not evaluate" in follow_up["reason"]

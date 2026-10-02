@@ -208,3 +208,21 @@ async def test_the_review_queue_and_a_decision_that_only_one_reviewer_can_make(s
     assert (stored.execution_status, stored.business_status) == (ExecutionStatus.FINISHED, DisputeStatus.REJECTED)
     assert [e["note"] for e in await store.events(waiting_failed.dispute_id)][-1] == "reviewed by ops-ana: reject"
     assert [r.dispute_id for r in await store.review_queue()] == [waiting_finished.dispute_id]
+
+
+async def test_a_dispute_sent_to_customer_service_is_flagged_once_and_resolved_once(store):
+    record, _ = await new_dispute(store)
+    assert await store.flag_follow_up(record.dispute_id, "the judge found an invented cause")
+    assert not await store.flag_follow_up(record.dispute_id, "flagged twice")
+
+    open_ = await store.follow_ups()
+    assert [(f["dispute_id"], f["reason"], f["user_id"]) for f in open_] == [
+        (record.dispute_id, "the judge found an invented cause", "user-1001")]
+    assert (await store.load(record.dispute_id)).business_status == DisputeStatus.RECEIVED  # status untouched
+
+    assert await store.resolve_follow_up(record.dispute_id, "ops-ana", "called the customer and corrected it")
+    assert not await store.resolve_follow_up(record.dispute_id, "ops-luis", "again")
+    assert await store.follow_ups() == []
+    notes = [e["note"] for e in await store.events(record.dispute_id)]
+    assert notes[-2:] == ["sent to customer service: the judge found an invented cause",
+                          "customer service follow-up done by ops-ana: called the customer and corrected it"]

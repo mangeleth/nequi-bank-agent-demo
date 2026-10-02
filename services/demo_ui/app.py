@@ -240,6 +240,44 @@ def show_judgement(judgement: dict | None) -> None:
         st.caption(f"No se pudo evaluar: {judgement['result']['error']}")
 
 
+def customer_service(token: str) -> None:
+    """Disputes the AI judge sent to customer service (ADR-0026): the explanation failed the quality
+    check, so a person checks what the customer was told. Money is never touched here."""
+    follow_ups = reviews().follow_ups(token)
+    st.subheader(f"🛎️ Servicio al cliente: {len(follow_ups)} explicación(es) que el juez marcó")
+    if not follow_ups:
+        st.caption("Cuando el juez de IA encuentra problemas en una explicación (o no la puede evaluar), la "
+                   "disputa llega aquí. Si estaba cerrada sin reembolso, además se reabre en la cola de revisión.")
+        return
+    st.dataframe(pd.DataFrame([{"disputa": str(f["dispute_id"])[:8], "cliente": f["customer_id"],
+                                "transferencia": f["dispute"]["transaction_id"],
+                                "estado": logic.STATUS_LABELS.get(f["dispute"]["status"], f["dispute"]["status"]),
+                                "problema que encontró el juez": f["reason"]} for f in follow_ups]),
+                 hide_index=True, width="stretch")
+    chosen = st.selectbox("Caso a atender", [str(f["dispute_id"]) for f in follow_ups], key="follow-up-selected",
+                          format_func=lambda d: next(f"{d[:8]} · {f['customer_id']} · {f['dispute']['transaction_id']}"
+                                                     for f in follow_ups if str(f["dispute_id"]) == d))
+    item = next(f for f in follow_ups if str(f["dispute_id"]) == chosen)
+    left, right = st.columns(2, gap="large")
+    with left:
+        show_judgement(item.get("judgement"))
+    with right:
+        st.markdown("**Lo que se le dijo al cliente** (texto del sistema, sin traducir)")
+        st.write(item["dispute"]["customer_message"])
+        if explanation := ((item["dispute"].get("result") or {}).get("verdict") or {}).get("explanation"):
+            st.markdown("**Explicación de los agentes** (texto del sistema, sin traducir)")
+            st.write(explanation)
+    note = st.text_area("Qué hiciste (obligatorio, queda en la auditoría)", key=f"cs-note-{chosen}", max_chars=500)
+    if st.button("Marcar como atendido", disabled=len(note.strip()) < 5, key=f"cs-done-{chosen}"):
+        response = reviews().resolve(token, chosen, note.strip())
+        if response.status_code == 200:
+            st.success("Caso atendido y registrado en la auditoría.")
+            st.session_state.pop("follow-up-selected", None)
+        else:
+            st.error(f"HTTP {response.status_code}: {response.json().get('detail', response.text)}")
+    st.markdown("---")
+
+
 def review_tab() -> None:
     st.markdown("Eres una persona del banco que revisa las disputas que el sistema no pudo decidir solo. "
                 "Al **aprobar**, se paga lo que el libro contable muestra pendiente (no lo que escribas); al "
@@ -249,6 +287,7 @@ def review_tab() -> None:
         st.session_state.pop("review-selected", None)
     try:
         token = logic.login_reviewer(reviewer, login_settings())
+        customer_service(token)
         queue = reviews().queue(token)
     except Exception as exc:  # the API or the login key is unavailable: say so, do not crash the page
         st.warning(f"La revisión no está disponible ahora ({type(exc).__name__}). Intenta de nuevo en unos segundos.")

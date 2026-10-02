@@ -5,7 +5,9 @@
         evidence, read by code from Core Systems (the transaction and its risk signals)
     ask the judge; save its verdict next to the dispute; acknowledge the job
 
-It runs after the customer has their answer and never changes a decision. A job that fails is
+It runs after the customer has their answer and never touches money. When the judge finds
+problems, the dispute is sent to customer service (a person); a dispute closed without a refund
+is reopened for review. A job that fails is
 left unacknowledged and is retried (another worker can reclaim it); after its last attempt the
 dispute is recorded as "could not be judged".
 
@@ -29,7 +31,9 @@ from langchain_core.language_models import BaseChatModel
 from services.judge.judge import judge
 from services.judge.rubric import PROMPT_VERSION, JudgeCase
 from services.supervisor.judge_jobs import JudgeJob, JudgeJobs, build_judge_jobs
+from services.supervisor.messages import review_again_message
 from services.supervisor.store import DisputeRecord, DisputeStore, open_store
+from shared.schemas import DisputeStatus, TriageResult
 
 log = logging.getLogger("judge")
 
@@ -99,6 +103,40 @@ def case_for(record: DisputeRecord, evidence: dict) -> JudgeCase | None:
     return JudgeCase(question=question, answer=answer, evidence=evidence)
 
 
+def problems(verdict: dict) -> str:
+    """The failed criteria and the judge's reasons, for the people who follow it up."""
+    if "error" in verdict:
+        return f"the judge could not evaluate it ({verdict['error']})"
+    failed = [f"{name}: {verdict[name]['reason']}" for name in ("groundedness", "completeness", "clarity")
+              if name in verdict and not verdict[name]["passed"]]
+    return "; ".join(failed)[:500]
+
+
+async def send_to_customer_service(store: DisputeStore, record: DisputeRecord, verdict: dict) -> str:
+    """The judge found problems (or could not evaluate): a person must look (ADR-0026).
+
+    It never touches money. A refund already approved or paid stays as it is; customer service
+    checks what the customer was told. A dispute CLOSED without a refund is reopened for review,
+    because that is where a wrong explanation can hide a wrong decision against the customer.
+    Returns what was done.
+    """
+    reason = problems(verdict)
+    if record.business_status == DisputeStatus.CLOSED_NO_REFUND and record.result:
+        result = TriageResult.model_validate(record.result)
+        reopened = result.model_copy(update={
+            "status": DisputeStatus.PENDING_HUMAN_APPROVAL,
+            "escalation_reason": f"the AI judge found problems in the explanation: {reason}"[:1000],
+            "customer_message": review_again_message(result.ledger),
+            "steps": [*result.steps, "judge: problems found -> reopened for a person"],
+        })
+        await store.settle(record.dispute_id, expected=DisputeStatus.CLOSED_NO_REFUND, result=reopened,
+                           note="reopened: the AI judge found problems in the explanation")
+        await store.flag_follow_up(record.dispute_id, reason)
+        return "reopened"
+    await store.flag_follow_up(record.dispute_id, reason)
+    return "flagged"
+
+
 class JudgeWorker:
     def __init__(self, *, store: DisputeStore, jobs: JudgeJobs, model: BaseChatModel, evidence: Evidence) -> None:
         self.store, self.jobs, self.model, self.evidence = store, jobs, model, evidence
@@ -120,14 +158,20 @@ class JudgeWorker:
             verdict = await judge(self.model, case)
             await self.store.save_judgement(job.dispute_id, verdict.model_dump(), passed=verdict.passed,
                                             prompt_version=PROMPT_VERSION)
+            if not verdict.passed:
+                done = await send_to_customer_service(self.store, record, verdict.model_dump())
+                log.warning("dispute %s sent to customer service (%s)", job.dispute_id, done)
             await self.jobs.ack(job)
             log.info("judged dispute %s: %s", job.dispute_id, "pass" if verdict.passed else "FAIL")
         except Exception as exc:
             log.warning("judging dispute %s failed (attempt %d): %s", job.dispute_id, job.attempt, exc)
             if job.is_last:
                 with suppress(Exception):
-                    await self.store.save_judgement(job.dispute_id, {"error": f"{type(exc).__name__}: {exc}"[:300]},
-                                                    passed=None, prompt_version=PROMPT_VERSION)
+                    error = {"error": f"{type(exc).__name__}: {exc}"[:300]}
+                    await self.store.save_judgement(job.dispute_id, error, passed=None, prompt_version=PROMPT_VERSION)
+                    record = await self.store.load(job.dispute_id)
+                    if record is not None:  # not judged is "needs a look" too
+                        await send_to_customer_service(self.store, record, error)
                     await self.jobs.ack(job)
             # Otherwise not acknowledged: the job is retried when it is reclaimed.
 
