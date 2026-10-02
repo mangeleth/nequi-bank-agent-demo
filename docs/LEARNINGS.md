@@ -175,3 +175,47 @@ there is no known-incident fast path. The pieces it would build on exist: the re
 already deterministic code (ADR-0007), and Milestone 6 adds the safety gate, the queue, and the
 idempotent refund execution that a batch refund needs. A fast path would be one more check at
 that gate, before the queue.
+
+## B. Measure cost per success, not cost per request
+
+```
+                     cost of all evaluated attempts, including retries
+cost per success  =  -------------------------------------------------
+                            number of successful requests
+```
+
+**Why this metric.** Cost per request divides by everything that ran, so failures look free.
+Cost per success charges the failures to the successes, which is how the business experiences
+them: a triage that ends in the wrong outcome still cost money, and so did every retry.
+
+**What goes in the numerator.** Everything spent on the attempts being evaluated:
+- every model call, including the ones in runs that failed or were escalated
+- retries: an agent called a second time, and a model answer rejected by validation and redone
+- the same dispute submitted again by the customer (until deduplication stops it, Milestone 6)
+
+**What counts as a success.** Decide this before measuring, and make it strict. For this system
+a success is a dispute that ends in the *expected outcome* for its scenario, not a request that
+returned HTTP 200. A triage that is escalated to a person because the model made a mistake
+returned 200 and is not a success.
+
+**Worked example with this repository's figures.** One full triage (supervisor and both agents)
+costs about $0.019 in model usage, measured in Langfuse. In the first end-to-end run of the seven
+fixture scenarios, six ended in the expected outcome and one did not (Part 1, entry 1).
+
+| | Calculation | Result |
+|---|---|---|
+| Cost per request | 7 x $0.019 / 7 | $0.019 |
+| Cost per success | 7 x $0.019 / 6 | about $0.022 |
+
+This is an estimate: it applies today's measured cost per triage to that run, which was traced
+only in part. After the fix, all seven scenarios succeed and the two figures are equal. The gap
+between them is the price of unreliability, and it is the number to watch when changing a
+prompt, a model, or a limit.
+
+**What it does not include.** A dispute escalated to a person has a human cost far larger than
+the model cost. Two companion metrics cover that: the share of disputes resolved without a
+person, and the share of automatic decisions later reversed.
+
+**What this repository does today.** Langfuse records the cost of every model call in every
+triage, so the numerator is available per trace. Nothing yet labels a run as a success or
+computes the ratio. Milestone 8 adds an evaluation run of the seven scenarios that reports it.

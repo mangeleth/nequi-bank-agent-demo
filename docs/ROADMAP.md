@@ -76,4 +76,6 @@ them automatically on every change.
 | 3. Automated adversarial tests | A model that loops, agents that are down, slow, or answer with garbage, an inflated refund, a fooled model, a rogue MCP server: each must end gracefully in human review | `tests/test_supervisor.py`, `tests/test_supervisor_clients.py`, `tests/test_fraud_agent.py`, `tests/test_ledger_agent.py` |
 
 Still to do in Milestone 8: run the suite in GitHub Actions as a required check, and add an
-evaluation run of the seven fixture scenarios against the real model.
+evaluation run of the seven fixture scenarios against the real model. The evaluation reports
+**cost per success**: the cost of all evaluated attempts, including retries, divided by the
+number of disputes that ended in the expected outcome (see `docs/LEARNINGS.md`, Part 2).
