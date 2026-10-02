@@ -311,3 +311,102 @@ Milestone 6. Tests check that no message uses a verb for an action that has not 
 the evaluation checks the message on the deployed system. The "investigation is running"
 wording has no use yet: a triage is a single request, so there is no running state to report
 until intake becomes asynchronous (Milestone 6).
+
+## E. "The agent finished" is not "the customer's issue is resolved"
+
+Two statuses answer two different questions, and merging them produces false statements.
+
+| | Question it answers | Who reads it | Typical values |
+|---|---|---|---|
+| **Execution status** | What happened to this run of the graph? | Engineers, operations | queued, running, finished, failed |
+| **Business status** | Where does the customer's dispute stand? | The customer, support, auditors | received, investigating, pending human approval, refund approved, refund paid, closed |
+
+Why they must be separate:
+- A run can **finish successfully** and leave the dispute **unresolved**: the graph did its job
+  by sending the case to a person. Reporting "finished" as "resolved" tells the customer their
+  problem is over when a human has not looked at it.
+- A run can **fail** while the dispute is fine: a retry or a person picks it up, and the customer
+  should never see "failed".
+- They change at different times and for different reasons. The business status changes on
+  events outside any run: a person approves, the ledger confirms a payment, a customer appeals.
+- A dispute outlives its runs. One dispute may have several runs (a retry, a re-run after new
+  evidence), so the business status belongs to a stored dispute record, not to a run.
+
+That last point is why the business status needs a **database**: Redis here holds claims and
+results that expire, a trace describes one run, and neither is the durable record of a
+dispute. The plan is PostgreSQL in Milestone 6, Step 10.
+
+**What this repository does today.** `TriageResult.status` is a business status, and a 200
+response means the run finished, so the two are distinct in principle. One value is wrong: an
+automatically approved refund is reported as `resolved` although nothing has been paid, while
+the customer message for the same result says "It has not been paid yet" ([#12](https://github.com/mangeleth/nequi-bank-agent-demo/issues/12)).
+There is no stored dispute record yet.
+
+## F. A correct status does not prove the explanation
+
+```python
+scores = {
+    "status_correct": predicted_status == expected_status,
+    "id_format_valid": bool(re.fullmatch(r"TX-\d{6}", transaction_id)),
+}
+# Neither check proves that this explanation is supported:
+explanation = "The transfer failed due to insufficient funds."
+```
+
+Deterministic checks verify the structured part of an answer. The free text beside it can still
+state something no record supports, and it is the part the customer reads.
+
+**Evaluate the explanation separately, against the evidence.** An LLM judge is the usual tool,
+and it is only trustworthy with three things:
+- **Evidence:** the judge sees exactly what the model had (the tool results), not its own
+  knowledge of the world.
+- **A rubric:** per claim, *supported*, *contradicted*, or *not found in the evidence*. A single
+  1-5 "quality" score cannot be acted on.
+- **Calibration:** hand-labelled examples the judge must score correctly. A judge is a model
+  too; its agreement with people is a number to report, not an assumption.
+
+Order of preference stays the same as everywhere else: a deterministic check where one is
+possible, a judge only for what cannot be checked by code.
+
+**What this repository does today.** The evaluation checks numbers only (*numeric*
+groundedness): every amount, score, and count the models write must appear in the tool results.
+A false cause with no number in it would pass. Core Systems returns no failure reason at all,
+so any cause a model states is unsupported by definition. The customer message avoids the
+problem by not using model text. The judge is planned for Milestone 8 ([#10](https://github.com/mangeleth/nequi-bank-agent-demo/issues/10)).
+
+## G. When a fact is missing, retrieve it, and prefer a lookup to an agent
+
+```python
+def route(state):
+    return "diagnostics" if state["failure_reason"] is None else END
+```
+
+A graph can branch on *what is missing*: if the transaction record has no failure reason, go to
+a diagnostics step that looks for one, and only then answer.
+
+Two points for the design:
+- **A lookup is a node, not an agent.** In the sketch above `diagnostics` calls one function and
+  returns its value. That needs no model. An agent earns its place only when the source is
+  unstructured (free-text logs) and someone has to interpret it.
+- **The step must be allowed to fail.** If diagnostics finds nothing, the honest answer is "the
+  transfer is marked as failed, but the available records don't show why" (entry D), not a
+  plausible guess.
+
+**What this repository does today.** The supervisor already branches on missing evidence for the
+ledger facts and the fraud assessment. It has no failure-reason data and no diagnostics step
+([#11](https://github.com/mangeleth/nequi-bank-agent-demo/issues/11)).
+
+## H. Showing progress to the customer
+
+- The backend reads `graph.stream(..., stream_mode="updates")` to receive each node's update as
+  the graph runs.
+- **Task events are for monitoring the execution** (which node ran, how long, did it fail).
+- **Explicitly stored business statuses are for explaining progress to the customer.** "Checking
+  additional records" is a status the system sets on purpose, not a translation of whichever
+  node happens to be running.
+- With a checkpointer configured, the saved state of a run can be inspected with `get_state`,
+  and a run can pause for a human and resume.
+
+**What this repository does today.** The triage is one request that returns when it is done,
+with the path taken in `steps`. There is no streaming, no checkpointer, and no stored status.
+These arrive with asynchronous intake (Milestone 6, Step 10) and the UI (Milestone 7).

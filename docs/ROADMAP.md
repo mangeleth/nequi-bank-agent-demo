@@ -69,12 +69,26 @@ Planned steps:
 - **Step 9 (done):** dispute store and deduplication key in the supervisor (`claim`,
   `complete`, `release`) on Redis, with tests for 10 simultaneous identical requests (ADR-0015).
 - **Step 10:** asynchronous intake: queue, worker, `202 Accepted`, and status endpoint.
+  Disputes are stored durably in **PostgreSQL** (a unique constraint on the dispute key; Redis
+  stays in front as the fast path), with two separate statuses: an *execution status* for the
+  run of the graph and a *business status* for the customer's dispute ([#12](https://github.com/mangeleth/nequi-bank-agent-demo/issues/12)).
 - **Step 11:** refund execution in Core Systems (the first ledger write) with an idempotency
   key, and the rate-limited approval drain with a dead-letter queue.
 - **Step 12:** known-incident fast path: an incident registry in Core Systems, the check at
   the gate, the batch refund job, and an evaluation scenario that proves a matching dispute
   makes zero model calls.
 - Azure resources use Entra ID and Workload Identity, with no connection strings (ADR-0001).
+
+## Milestone 7: the demo UI
+
+- A Streamlit app simulating the Nequi app: submit a dispute, watch the investigation, read the
+  outcome and the customer message, and open the Langfuse trace.
+- **Seeing progress.** The backend consumes `graph.stream(..., stream_mode="updates")` to
+  receive each node's update as it happens. Execution events are for monitoring the run;
+  what the customer sees is the explicitly stored *business status* (Milestone 6, Step 10),
+  never a guess from which node is running. With a checkpointer configured, the state of a
+  dispute can also be inspected with `get_state`, and a human approval can pause and resume
+  the graph.
 
 ## Milestone 8: the three-tier defensive barrier
 
@@ -94,4 +108,16 @@ $0.0143 per success.
 
 Still to do in Milestone 8: run the unit tests and the evaluation in GitHub Actions as required
 checks; more scenarios, including conflicting and stale evidence (`docs/LEARNINGS.md`, Part 2,
-entry C); several runs per scenario to measure decision agreement.
+entry C); several runs per scenario to measure decision agreement; an **LLM judge with the
+evidence and a rubric** for the explanations, calibrated against hand-labelled examples
+([#10](https://github.com/mangeleth/nequi-bank-agent-demo/issues/10)).
+
+## Backlog (not scheduled)
+
+| Issue | What |
+|---|---|
+| [#6](https://github.com/mangeleth/nequi-bank-agent-demo/issues/6) | Verify evidence timing: a decision can be made on a stale ledger reading |
+| [#7](https://github.com/mangeleth/nequi-bank-agent-demo/issues/7) | Exercise and report a claimed amount that differs from the ledger |
+| [#8](https://github.com/mangeleth/nequi-bank-agent-demo/issues/8) | Unresolved disputes should state what is known and what remains uncertain |
+| [#9](https://github.com/mangeleth/nequi-bank-agent-demo/issues/9) | Compare retry policies by total spending and cost per success |
+| [#11](https://github.com/mangeleth/nequi-bank-agent-demo/issues/11) | Diagnostics step: find the failure reason when the transaction record does not have one |
