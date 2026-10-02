@@ -103,6 +103,11 @@ Planned steps:
   never a guess from which node is running. With a checkpointer configured, the state of a
   dispute can also be inspected with `get_state`, and a human approval can pause and resume
   the graph.
+- **Make the fast path visible** ([DEMO_SCRIPT.md](DEMO_SCRIPT.md), scenario 2). A dispute
+  decided by a confirmed incident shows a "decided without a model" badge, the incident and who
+  confirmed it, a model-call count of 0 and a cost of $0, and the policy checks it still passed.
+  Shown side by side with an uncovered dispute that goes through the agents.
+- The UI follows the live demo script, scenario by scenario.
 
 ## Milestone 8: the three-tier defensive barrier
 

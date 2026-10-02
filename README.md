@@ -408,6 +408,8 @@ the system deployed on AKS and scores each run from its Langfuse trace
 The scenarios include a prompt injection, an attempt to dispute another customer's
 transaction, and a duplicate submission that must be answered from the gate at no model cost. Reports are kept in [`evals/results/`](evals/results/).
 
+The scenarios to show live, in order, are in [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md).
+
 ## Run it locally
 
 ```bash
