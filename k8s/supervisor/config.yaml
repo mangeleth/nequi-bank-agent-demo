@@ -1,8 +1,14 @@
 ---
-# Non-secret settings. ${...} values are filled from .env by `make deploy`.
+# Non-secret settings for the intake API. ${...} values are filled from .env by `make deploy`.
 apiVersion: v1
 kind: ConfigMap
 metadata:
+  name: supervisor
+  namespace: disputes
+  labels:
+    app.kubernetes.io/name: supervisor
+    app.kubernetes.io/part-of: dispute-triage
+data:
   # Core Systems, for the ownership check before a dispute is stored
   CORE_SYSTEMS_URL: http://core-systems
   FRAUD_AGENT_URL: http://fraud-agent

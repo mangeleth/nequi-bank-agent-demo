@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: test-db test-servicebus venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster redis-image postgres-image postgres-password signing-key signing-grant signing-key-publish servicebus-create sb-grant demo-reset test guard-clean build push deploy smoke release
+.PHONY: test-db test-servicebus venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster redis-image postgres-image postgres-password signing-key signing-grant signing-key-publish servicebus-create sb-grant demo-reset test guard-clean validate build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -354,6 +354,14 @@ guard-clean:
 	@git diff --quiet HEAD -- && test -z "$$(git ls-files --others --exclude-standard)" \
 		|| (echo "Uncommitted changes: commit first, image tags must map to a commit (ADR-0004)"; exit 1)
 
+## Check that every Kubernetes manifest is well-formed after its placeholders are filled.
+## Catches a broken file before anything is built or applied.
+validate:
+	@for f in k8s/namespace.yaml k8s/*/*.yaml; do \
+		IMAGE=x IMAGE_TAG=x WI_CLIENT_ID=x AZURE_TENANT_ID=x envsubst < $$f | kubectl apply --dry-run=client -f - >/dev/null \
+			|| { echo "INVALID MANIFEST: $$f"; exit 1; }; \
+	done; echo "manifests valid"
+
 ## Build the service image from the repo root (so it can include shared/)
 build:
 	docker build -f $(SERVICE_DIR)/Dockerfile -t $(IMAGE) .
@@ -402,5 +410,5 @@ smoke-triage:
 		-H "Content-Type: application/json" \
 		-d '{"transaction_id":"$(TX)","reason":"failed_transfer","claimed_amount":"50000.00"}'
 
-## Full pipeline: clean tree -> tests -> build -> push -> deploy -> smoke
-release: guard-clean test build push deploy smoke
+## Full pipeline: clean tree -> tests -> manifests valid -> build -> push -> deploy -> smoke
+release: guard-clean test validate build push deploy smoke
