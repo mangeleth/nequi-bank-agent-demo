@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token run-core run-fraud run-ledger wi-create jwt-publish smoke-fraud smoke-ledger test guard-clean build push deploy smoke release
+.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token run-core run-fraud run-ledger run-supervisor wi-create jwt-publish smoke-fraud smoke-ledger test guard-clean build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -185,6 +185,12 @@ run-fraud:
 
 run-ledger:
 	.venv/bin/uvicorn services.ledger_agent.main:create_app --factory --port 8003
+
+## The Langfuse keys are read from Key Vault for this process only; they are never written to disk
+run-supervisor:
+	LANGFUSE_PUBLIC_KEY=$$(az keyvault secret show --vault-name $(KEYVAULT_NAME) -n langfuse-public-key --query value -o tsv) \
+	LANGFUSE_SECRET_KEY=$$(az keyvault secret show --vault-name $(KEYVAULT_NAME) -n langfuse-secret-key --query value -o tsv) \
+	.venv/bin/uvicorn services.supervisor.main:create_app --factory --port 8004
 
 # ---------------------------------------------------------------------------------------------
 # Delivery (ADR-0004): make release SERVICE=core-systems

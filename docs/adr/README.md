@@ -17,6 +17,7 @@ To change a decision, add a new ADR that supersedes the old one, and mark the ol
 | [0010](0010-model-choice-and-determinism.md) | gpt-4o at temperature 0, pinned and replaceable | Accepted | M3 |
 | [0011](0011-fraud-agent-design.md) | Fraud Agent: the model chooses what to look up, code decides for whom | Accepted | M3 |
 | [0012](0012-ledger-agent-over-mcp.md) | Ledger Agent reaches Core Banking through MCP, and its figures are verified in code | Accepted | M4 |
+| [0013](0013-supervisor-graph-circuit-breakers-tracing.md) | Supervisor as a cyclic LangGraph with code-enforced circuit breakers, traced to Langfuse | Accepted | M5 |
 
 ## Template
 

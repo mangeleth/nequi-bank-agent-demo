@@ -31,6 +31,10 @@ class ScriptedChatModel(BaseChatModel):
         self.tool_schemas = [convert_to_openai_tool(t) for t in tools]
         return self
 
+    def with_structured_output(self, schema, **kwargs):
+        # The scripted reply is a tool call named after the schema; provider options are ignored.
+        return super().with_structured_output(schema)
+
     def everything_shown_to_model(self) -> str:
         return json.dumps([m.model_dump() for call in self.seen for m in call], default=str)
 
