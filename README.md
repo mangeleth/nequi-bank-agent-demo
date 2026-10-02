@@ -4,6 +4,7 @@ Proof-of-concept Dispute Triage & Resolution multi-agent system on AKS.
 
 - Roadmap: [docs/ROADMAP.md](docs/ROADMAP.md)
 - Architecture decisions: [docs/adr](docs/adr/README.md)
+- Learnings (what went wrong and what changed): [docs/LEARNINGS.md](docs/LEARNINGS.md)
 
 ## The supervisor graph
 
