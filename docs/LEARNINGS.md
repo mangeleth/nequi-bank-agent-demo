@@ -368,6 +368,34 @@ and it is only trustworthy with three things:
 Order of preference stays the same as everywhere else: a deterministic check where one is
 possible, a judge only for what cannot be checked by code.
 
+**Calibrating the judge.** A judge is a model, so it is measured against people before its
+verdicts are trusted. People label a set of answers PASS or FAIL; the judge labels the same set.
+
+```python
+cases = [
+    {"human": "FAIL", "judge": "PASS"},
+    {"human": "FAIL", "judge": "FAIL"},
+    {"human": "PASS", "judge": "PASS"},
+    {"human": "PASS", "judge": "FAIL"},
+]
+agreement = sum(c["human"] == c["judge"] for c in cases) / len(cases)                    # 50%
+unsafe_passes = sum(c["human"] == "FAIL" and c["judge"] == "PASS" for c in cases)       # 1
+```
+
+Overall agreement is useful, but which disagreements occurred tells you what to fix. The two
+kinds are not equally bad:
+
+| Disagreement | Meaning | Cost | Likely fix |
+|---|---|---|---|
+| Human FAIL, judge PASS (**unsafe pass**) | The judge let a bad answer through | A wrong answer reaches customers unnoticed. The one to drive to zero. | The rubric is too loose, or the judge was not shown the evidence it needed |
+| Human PASS, judge FAIL (false alarm) | The judge rejected a good answer | Reviewer time, and people stop trusting the alerts | The rubric is ambiguous or stricter than the people applying it |
+
+So a calibration report states three things: agreement, the count of unsafe passes, and the
+disagreeing cases themselves, read one by one. It is done per rubric criterion (a judge can be
+reliable on groundedness and poor on clarity), and repeated whenever the judge's prompt or
+model changes. Four cases illustrate the arithmetic; a real set needs enough FAIL examples for
+an unsafe-pass rate to mean something.
+
 **What this repository does today.** The evaluation checks numbers only (*numeric*
 groundedness): every amount, score, and count the models write must appear in the tool results.
 A false cause with no number in it would pass. Core Systems returns no failure reason at all,

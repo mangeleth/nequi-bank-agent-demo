@@ -125,7 +125,10 @@ explanation is supported by the evidence, so every finished triage is also judge
 - The verdict is stored in PostgreSQL next to the dispute, and the UI (Milestone 7) shows a
   table of disputes with their judge results.
 - The judge runs after the customer has their answer: it measures quality and raises alerts;
-  it does not block or change a decision. It is calibrated against hand-labelled examples.
+  it does not block or change a decision.
+- **Calibration** against answers labelled PASS or FAIL by people: report the agreement rate,
+  the number of **unsafe passes** (a person said FAIL, the judge said PASS), and each
+  disagreeing case, per rubric criterion. Re-run whenever the judge's prompt or model changes.
 
 ## Backlog (not scheduled)
 
