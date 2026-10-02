@@ -62,9 +62,12 @@ def _dispute_message(request: DisputeRequest) -> HumanMessage:
     )
 
 
-async def assess(agent, request: DisputeRequest, context: AgentContext) -> FraudAssessment:
+async def assess(
+    agent, request: DisputeRequest, context: AgentContext, callbacks: list | None = None
+) -> FraudAssessment:
     """Run the agent for one dispute. Raises AssessmentFailed if no valid assessment comes back."""
-    result = await agent.ainvoke({"messages": [_dispute_message(request)]}, context=context)
+    config = {"callbacks": callbacks or [], "run_name": "fraud-agent"}  # callbacks: Langfuse tracing
+    result = await agent.ainvoke({"messages": [_dispute_message(request)]}, config=config, context=context)
     assessment = result.get("structured_response")
     if not isinstance(assessment, FraudAssessment):
         raise AssessmentFailed("agent ended without a valid FraudAssessment")

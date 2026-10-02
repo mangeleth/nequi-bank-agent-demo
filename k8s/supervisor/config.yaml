@@ -1,17 +1,18 @@
 ---
 # Non-secret settings. ${...} values are filled from .env by `make deploy`.
-# The JWT public key lives in its own ConfigMap (`make jwt-publish`): it can verify tokens,
-# not sign them, so it is not a secret (ADR-0009).
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: ledger-agent
+  name: supervisor
   namespace: disputes
   labels:
-    app.kubernetes.io/name: ledger-agent
+    app.kubernetes.io/name: supervisor
     app.kubernetes.io/part-of: dispute-triage
 data:
-  CORE_SYSTEMS_URL: http://core-systems # ClusterIP Service DNS name; MCP is served at /mcp
+  # Other services, by their ClusterIP Service DNS names
+  CORE_SYSTEMS_URL: http://core-systems
+  FRAUD_AGENT_URL: http://fraud-agent
+  LEDGER_AGENT_URL: http://ledger-agent
   AOAI_NAME: ${AOAI_NAME}
   AOAI_DEPLOYMENT: ${AOAI_DEPLOYMENT}
   AOAI_API_VERSION: ${AOAI_API_VERSION}
@@ -22,3 +23,9 @@ data:
   LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL}
   LANGFUSE_PUBLIC_KEY_FILE: /mnt/secrets/langfuse-public-key
   LANGFUSE_SECRET_KEY_FILE: /mnt/secrets/langfuse-secret-key
+  # Refund policy limits (ADR-0007). Changing these is an operational change, not a code change.
+  AUTO_REFUND_ENABLED: "true" # kill switch: "false" sends every refund to a human
+  AUTO_REFUND_MAX_AMOUNT: "100000.00"
+  AUTO_REFUND_MAX_COUNT: "3"
+  AUTO_REFUND_MAX_TOTAL: "200000.00"
+  AUTO_REFUND_WINDOW_DAYS: "30"

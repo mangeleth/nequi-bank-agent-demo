@@ -3,6 +3,7 @@
 -r services/core_systems/requirements.txt
 -r services/fraud_agent/requirements.txt
 -r services/ledger_agent/requirements.txt
+-r services/supervisor/requirements.txt
 pytest>=8
 pytest-asyncio>=0.24
 httpx>=0.28

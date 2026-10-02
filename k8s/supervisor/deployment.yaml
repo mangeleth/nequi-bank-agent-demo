@@ -2,13 +2,13 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: ledger-agent
+  name: supervisor
   namespace: disputes
   labels:
-    app.kubernetes.io/name: ledger-agent
+    app.kubernetes.io/name: supervisor
     app.kubernetes.io/part-of: dispute-triage
   annotations:
-    # Workload Identity: this ServiceAccount is federated to the managed identity id-ledger-agent,
+    # Workload Identity: this ServiceAccount is federated to the managed identity id-supervisor,
     # which may call Azure OpenAI and read the two Langfuse secrets in Key Vault. Not a secret.
     azure.workload.identity/client-id: ${WI_CLIENT_ID}
 # The pod never calls the Kubernetes API. The Entra ID token exchange uses a separate,
@@ -18,17 +18,17 @@ automountServiceAccountToken: false
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ledger-agent
+  name: supervisor
   namespace: disputes
   labels:
-    app.kubernetes.io/name: ledger-agent
+    app.kubernetes.io/name: supervisor
     app.kubernetes.io/part-of: dispute-triage
 spec:
   replicas: 2
   revisionHistoryLimit: 5
   selector:
     matchLabels:
-      app.kubernetes.io/name: ledger-agent
+      app.kubernetes.io/name: supervisor
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -37,11 +37,11 @@ spec:
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: ledger-agent
+        app.kubernetes.io/name: supervisor
         app.kubernetes.io/part-of: dispute-triage
         azure.workload.identity/use: "true" # asks the webhook to inject the identity token
     spec:
-      serviceAccountName: ledger-agent
+      serviceAccountName: supervisor
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
@@ -55,19 +55,19 @@ spec:
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
-              app.kubernetes.io/name: ledger-agent
+              app.kubernetes.io/name: supervisor
           # Count only pods of the same release, so a rolling update spreads the new pods
           # across nodes instead of balancing them against the old ones.
           matchLabelKeys: ["pod-template-hash"]
       containers:
         - name: api
-          image: ${IMAGE} # <acr>/ledger-agent:<git-sha>, set by `make deploy`
+          image: ${IMAGE} # <acr>/supervisor:<git-sha>, set by `make deploy`
           ports:
             - name: http
               containerPort: 8000
           envFrom:
             - configMapRef:
-                name: ledger-agent
+                name: supervisor
           resources:
             requests:
               cpu: 100m
@@ -79,7 +79,7 @@ spec:
             periodSeconds: 2
             failureThreshold: 30
           readinessProbe:
-            httpGet: { path: /readyz, port: http } # not ready while Core Systems is unreachable
+            httpGet: { path: /readyz, port: http } # not ready while either agent is not ready
             periodSeconds: 5
           livenessProbe:
             httpGet: { path: /healthz, port: http }
@@ -110,4 +110,4 @@ spec:
             driver: secrets-store.csi.k8s.io
             readOnly: true
             volumeAttributes:
-              secretProviderClass: ledger-agent-langfuse
+              secretProviderClass: supervisor-langfuse
