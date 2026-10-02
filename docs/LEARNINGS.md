@@ -253,11 +253,13 @@ not the complaints.
 use AI. The order of preference is: a database fact, then a deterministic rule, then an agent
 for what remains ambiguous.
 
-**What this repository does today.** Every dispute goes through the supervisor and the agents;
-there is no known-incident fast path. The pieces it would build on exist: the refund policy is
-already deterministic code (ADR-0007), and Milestone 6 adds the safety gate, the queue, and the
-idempotent refund execution that a batch refund needs. The fast path is planned as Step 12 of
-Milestone 6: one more check at that gate, before the queue.
+**What this repository does today** (Milestone 6, Step 12, ADR-0022). A confirmed incident
+covers transactions by failure code, bank, and time window. Before the graph runs, the worker asks
+whether one covers the disputed transaction; if so, code reads the ledger and the risk engine and
+runs the same refund policy, with zero model calls. Measured on the cluster: 0.2 s and $0 for a
+covered dispute, against about 11 s and $0.019 for the same failure one minute outside the window.
+A batch job refunds every covered transaction, including undisputed ones, and the ledger makes
+sure nothing is paid twice.
 
 ## B. Measure cost per success, not cost per request
 

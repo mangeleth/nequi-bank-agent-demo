@@ -42,13 +42,24 @@ are for what is ambiguous."
 
 ## 3. The batch refund: customers who never complained
 
-**Do:** run the batch job for `INC-20261001-01` (Step 12, part 3).
+**Do:** `make incident-refunds INCIDENT=INC-20261001-01` (a dry run), then again with
+`EXECUTE=true`, then once more.
 
-**Show:** `TX-20261001000010` (user-1003) is refunded although nobody disputed it. Then dispute
-it: the dispute is recorded as paid with the batch's refund, and nothing is paid twice.
+**Show:**
+- the dry run: the plan (`TX-20261001000010`, user-1003, 60.000 COP) and what it skips
+  (`TX-20261001000009`, already paid by scenario 2's dispute); nothing paid yet
+- execute: user-1003 is refunded although they never disputed
+- execute again: 0 refunds; nothing is paid twice
+- then, as user-1003, dispute `TX-20261001000010`: closed in under a second without a model,
+  *"the amount was already returned. No further refund is due."*
 
 **Say:** "The rule covers transactions, not complaints. And the ledger, not the caller, is what
 stops a double payment: one refund per transaction, checked and written as one step."
+
+**If asked "what if a dispute and the batch pay at the same moment?":** their keys differ, so the
+key cannot help; the ledger's locked row and one-refund-per-transaction rule do. A test races the
+two. If the dispute was approved first and the batch won, the dispute is recorded as paid with the
+batch's refund, not sent to a person.
 
 ## 4. Safety under failure
 

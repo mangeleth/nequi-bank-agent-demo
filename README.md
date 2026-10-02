@@ -121,6 +121,23 @@ If the queue redelivers a dispute whose decision was already saved, the worker o
 model is not asked again, so a second run cannot reach a different decision about money that may
 already have moved.
 
+## Known incidents: when not to use AI
+
+When the bank already knows what went wrong, there is nothing to investigate
+([ADR-0022](docs/adr/0022-known-incident-fast-path.md)). Operations confirms an incident once
+("transfers to Banco Andino timed out 09:00-09:40"); a dispute it covers is decided by code,
+with **zero model calls**, and still goes through the same refund policy.
+
+| Measured on the cluster | Covered by the incident | Same failure, after the window |
+|---|---|---|
+| Path | code only | three agents |
+| Time to result | 0.2 s | 10.9 s |
+| Model cost | $0 | $0.0194 |
+
+A batch job (`make incident-refunds`, a dry run unless `EXECUTE=true`) refunds every covered
+transaction, including customers who never complained. The ledger guarantees nobody is paid
+twice, even if a dispute and the batch try at the same moment.
+
 ## Architecture
 
 ```mermaid
@@ -394,16 +411,16 @@ The unit tests script the model; this measures it. `make eval-cluster` sends ten
 the system deployed on AKS and scores each run from its Langfuse trace
 ([ADR-0014](docs/adr/0014-evaluation-against-the-real-model.md)).
 
-| Metric | Latest run (commit `2df49b3`, gpt-4o 2024-11-20) |
+| Metric | Latest run (commit `d476310`, gpt-4o 2024-11-20, 12 scenarios) |
 |---|---|
-| Task success (expected status, decision, policy route, and customer message) | 10 of 10 |
+| **Success rate** (successful requests ÷ evaluated requests) | 12 of 12 (100%) |
 | Tool calls correct (required calls made, nothing else looked up) | 100% |
 | Numeric groundedness (numbers the models wrote appear in the tool results) | 100% |
 | Agent calls that were retries | 0 |
-| Total spending for ten attempts | $0.1287 |
-| Cost per success | $0.0129 |
-| Time to accept a dispute (the `202`), median | None |
-| Time to result, median / max | None |
+| Total spending for all attempts | $0.1486 |
+| **Cost per success** (total cost ÷ successful requests) | $0.0124 |
+| Time to accept a dispute (the `202`), median | 288 ms |
+| Time to result, median / max | 10.9 s / 15.8 s |
 
 The scenarios include a prompt injection, an attempt to dispute another customer's
 transaction, and a duplicate submission that must be answered from the gate at no model cost. Reports are kept in [`evals/results/`](evals/results/).

@@ -1,6 +1,6 @@
 # ADR-0022: Disputes covered by a confirmed incident are decided by code, without a model
 
-- **Status:** In progress (parts 1-3 of 4: the registry, the check, the batch refund)
+- **Status:** Accepted
 - **Date:** 2026-10-02
 - **Milestone:** M6 (Step 12)
 
@@ -11,7 +11,7 @@ and eight model calls per dispute to rediscover it is slow, costly, and one more
 wrong (docs/LEARNINGS.md, Part 2, entry A). The order of preference is: a database fact, then a
 deterministic rule, then an agent for what remains ambiguous.
 
-## Decision (so far)
+## Decision
 - **An incident registry in Core Systems.** An incident is confirmed by a person in operations,
   once, and covers every transaction that failed with its `failure_code` towards its
   `recipient_bank` inside its time window. Transactions now carry `recipient_bank` and
@@ -68,8 +68,16 @@ deterministic rule, then an agent for what remains ambiguous.
   looks up the refund that exists (`GET /v1/core-banking/transactions/{id}/refund`), and records
   the dispute as `refund_paid` with it, instead of sending a paid customer to a person.
 
-## Still to do
-4. An evaluation scenario proving zero model calls, and the deploy.
+## Verified on the cluster
+| Check | Result |
+|---|---|
+| The cluster's ledger, created before this step | Upgraded in place on start: columns backfilled, new rows and the incident added |
+| Evaluation, 12 scenarios | 12 of 12 |
+| `known-incident-fast-path` (TX-...0009, covered) | Paid; **0 model calls, $0, 0.2 s** |
+| `incident-window-edge` (TX-...0011, after the window) | The agents investigated: 10.9 s, $0.0194 |
+| Batch: dry run, execute, execute again | Planned TX-...0010 only (TX-...0009 already paid); paid it; then paid nothing |
+| user-1003's refund history after the batch | Unchanged (3 refunds, 65,000 COP): the incident refund is not counted |
+| user-1003 disputes TX-...0010 after the batch | Closed in 0.7 s without a model: "already returned"; still one refund |
 
 ## Production delta
 Incidents are created from monitoring (a spike of one failure code), proposed to operations, and

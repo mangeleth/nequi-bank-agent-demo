@@ -26,7 +26,7 @@ To change a decision, add a new ADR that supersedes the old one, and mark the ol
 | [0019](0019-shared-ledger-in-postgresql.md) | The ledger is one shared PostgreSQL store, and the database enforces "pay once" | Accepted | M6 |
 | [0020](0020-paying-approved-refunds.md) | The worker pays approved refunds from the saved decision; definite refusals go to a person | Accepted | M6 |
 | [0021](0021-refund-payer-and-refunds-queue.md) | Approved refunds go through their own queue, paid by a separate payer at a fixed pace | Accepted | M6 |
-| [0022](0022-known-incident-fast-path.md) | Disputes covered by a confirmed incident are decided by code, without a model | In progress | M6 |
+| [0022](0022-known-incident-fast-path.md) | Disputes covered by a confirmed incident are decided by code, without a model | Accepted | M6 |
 
 ## Template
 

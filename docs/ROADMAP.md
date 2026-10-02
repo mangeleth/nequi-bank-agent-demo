@@ -88,9 +88,9 @@ Planned steps:
     ledger confirms; refusals go to a person; no answer is retried with the same key (ADR-0020).
   - Done: approved refunds go through their own `refunds` queue to a `refund-payer` with no model
     access, at a fixed pace, with a pause switch and a dead-letter queue (ADR-0021).
-- **Step 12:** known-incident fast path: an incident registry in Core Systems, the check at
-  the gate, the batch refund job, and an evaluation scenario that proves a matching dispute
-  makes zero model calls.
+- **Step 12 (done, ADR-0022):** known-incident fast path: an incident registry in Core Systems,
+  the check before the graph (zero model calls, the same refund policy), the batch refund job,
+  and evaluation scenarios that prove it. Verified on the cluster.
 - Azure resources use Entra ID and Workload Identity, with no connection strings (ADR-0001).
 
 ## Milestone 7: the demo UI
@@ -108,6 +108,15 @@ Planned steps:
   confirmed it, a model-call count of 0 and a cost of $0, and the policy checks it still passed.
   Shown side by side with an uncovered dispute that goes through the agents.
 - The UI follows the live demo script, scenario by scenario.
+- **An evaluation dashboard with two numbers side by side**, because neither is enough alone:
+  - **success rate** = successful requests ÷ evaluated requests: is it right?
+  - **cost per success** = total cost ÷ successful requests (retries included): what does each
+    right answer cost?
+
+  A cheap system that often fails can still show a good cost per success, and a correct one can
+  be too expensive; together they cannot hide each other. Both come from the evaluation runs
+  (`evals/results/*.json`), shown per run over time, with time to accept and time to result next
+  to them, and the fast-path disputes counted separately (0 model calls, $0).
 
 ## Milestone 8: the three-tier defensive barrier
 
