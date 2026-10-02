@@ -97,3 +97,96 @@ async def test_ownership_check(status, owns):
 async def test_ownership_check_does_not_guess_when_core_systems_is_down():
     with pytest.raises(SpecialistUnavailable):
         await specialists(lambda request: httpx.Response(500)).owns_transaction(CALLER, DISPUTE.transaction_id)
+
+
+# --- Paying through the REAL Core Systems app (ADR-0020) ----------------------------------------
+# These run the supervisor's client against the actual ledger API, not a fake, because the first
+# deploy showed a fake can hide a contract mismatch: the client rejected the ledger's real reply
+# (it has more fields than we keep) and treated a successful payment as "no answer".
+
+
+def real_core_specialists():
+    from services.core_systems.app import app as core_app
+
+    http = httpx.AsyncClient(transport=httpx.ASGITransport(app=core_app), base_url="http://core-systems")
+    return core_app, HttpSpecialists(http, fraud_url="http://fraud-agent", ledger_url="http://ledger-agent",
+                                     core_url="http://core-systems")
+
+
+async def test_pay_refund_reads_the_real_ledgers_confirmation(monkeypatch):
+    monkeypatch.setenv("CORE_SYSTEMS_BACKEND", "in_memory")
+    core_app, client = real_core_specialists()
+    key = "dispute:5f0e7c1a-9b2d-4e6f-8a1b-3c5d7e9f0a1b"
+    async with core_app.router.lifespan_context(core_app):
+        first = await client.pay_refund("user-1001", DISPUTE.transaction_id, Decimal("50000.00"), key)
+        replay = await client.pay_refund("user-1001", DISPUTE.transaction_id, Decimal("50000.00"), key)
+
+    assert (first.amount, first.currency, first.idempotency_key) == (Decimal("50000.00"), "COP", key)
+    assert replay == first  # the same refund: paid once
+
+
+async def test_pay_refund_turns_the_real_ledgers_refusal_into_refund_refused(monkeypatch):
+    from services.supervisor.clients import RefundRefused
+
+    monkeypatch.setenv("CORE_SYSTEMS_BACKEND", "in_memory")
+    core_app, client = real_core_specialists()
+    async with core_app.router.lifespan_context(core_app):
+        with pytest.raises(RefundRefused) as refused:
+            await client.pay_refund("user-1001", DISPUTE.transaction_id, Decimal("49000.00"),
+                                    "dispute:5f0e7c1a-9b2d-4e6f-8a1b-3c5d7e9f0a1b")
+    assert refused.value.code == "amount_mismatch"
+
+
+@pytest.mark.parametrize("reply", [
+    {"transaction_id": "TX-20261001000008"},  # someone else's refund
+    {"amount": "5.00"},
+    {"idempotency_key": "dispute:another"},
+])
+async def test_a_confirmation_for_a_different_refund_is_not_trusted(reply):
+    confirmation = {"refund_id": "RF-1", "transaction_id": DISPUTE.transaction_id, "customer_id": "user-1001",
+                    "amount": "50000.00", "currency": "COP", "executed_at": "2026-10-02T14:00:00Z",
+                    "idempotency_key": "dispute:mine"} | reply
+    client = specialists(lambda request: httpx.Response(201, json=confirmation))
+    with pytest.raises(SpecialistUnavailable):
+        await client.pay_refund("user-1001", DISPUTE.transaction_id, Decimal("50000.00"), "dispute:mine")
+
+
+# --- The fast path's code-only reads, through the REAL Core Systems app (ADR-0022) ---------------
+
+
+async def test_incident_ledger_and_risk_reads_against_the_real_core_systems(monkeypatch):
+    monkeypatch.setenv("CORE_SYSTEMS_BACKEND", "in_memory")
+    core_app, client = real_core_specialists()
+    customer = CallerIdentity(user_id="user-1002", token_id="t", expires_at=datetime.now(UTC))
+    async with core_app.router.lifespan_context(core_app):
+        incident = await client.known_incident(customer, "TX-20261001000009")
+        not_covered = await client.known_incident(customer, "TX-20261001000011")  # after the window
+        ledger = await client.ledger_record(customer, "TX-20261001000009")
+        risk = await client.risk_engine(customer, "TX-20261001000009")
+
+    assert (incident.incident_id, incident.confirmed_by) == ("INC-20261001-01", "operations-lead (demo)")
+    assert not_covered is None
+    assert (ledger.settlement_status, ledger.discrepancy) == ("failed", Decimal("35000.00"))
+    assert "INTERBANK_TIMEOUT" in ledger.summary
+    assert (risk.risk_score, risk.risk_level) == (0.09, "low")
+
+
+async def test_core_systems_down_during_the_incident_check_is_unavailable_not_uncovered():
+    # A 503 must NOT read as "no incident": that would quietly send the dispute to the agents.
+    client = specialists(lambda request: httpx.Response(503, text="down"))
+    with pytest.raises(SpecialistUnavailable):
+        await client.known_incident(CALLER, DISPUTE.transaction_id)
+
+
+async def test_find_refund_reads_a_refund_paid_by_another_route_from_the_real_ledger(monkeypatch):
+    monkeypatch.setenv("CORE_SYSTEMS_BACKEND", "in_memory")
+    core_app, client = real_core_specialists()
+    async with core_app.router.lifespan_context(core_app):
+        assert await client.find_refund("user-1003", "TX-20261001000010") is None
+        await core_app.state.ledger.execute_refund("user-1003", "TX-20261001000010", Decimal("60000.00"),
+                                                   "incident:INC-20261001-01:TX-20261001000010")
+        found = await client.find_refund("user-1003", "TX-20261001000010")
+        someone_else = await client.find_refund("user-1002", "TX-20261001000010")
+
+    assert (found.amount, found.idempotency_key) == (Decimal("60000.00"), "incident:INC-20261001-01:TX-20261001000010")
+    assert someone_else is None  # scoped to the customer

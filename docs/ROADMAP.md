@@ -10,7 +10,7 @@ Kubernetes manifests and tests are written alongside each service, not at the en
 | **M3** Security boundary + Fraud Agent | `shared/auth.py`, `services/fraud_agent/`, Azure OpenAI + Workload Identity federation | Fraud Agent calling Core Systems and Azure OpenAI with no stored keys | Done |
 | **M4** Ledger Agent | MCP server in Core Systems, `services/ledger_agent/` (MCP client) | Ledger Agent querying settlement state over MCP | Done |
 | **M5** LangGraph supervisor, circuit breakers & tracing | `services/supervisor/` (LangGraph + Langfuse Cloud, keys from Key Vault); steps below | Done |
-| **M6** Safety gate: idempotency and a buffer for Core Banking | Deduplication key at the gate, a message queue for intake, a rate-limited approval drain, refund execution in Core Systems; steps below | Disputes accepted asynchronously; duplicates never reach a model; the ledger is written at a controlled rate | Next |
+| **M6** Safety gate: idempotency, a buffer for Core Banking, and a known-incident fast path | Deduplication key at the gate, a message queue for intake, a rate-limited approval drain, refund execution in Core Systems, an incident registry; steps below | Disputes accepted asynchronously; duplicates and known incidents never reach a model; the ledger is written at a controlled rate | In progress |
 | **M7** Demo UI | `services/ui/` (Streamlit) | Nequi-style UI end to end | |
 | **M8** Automated security & failure-mode tests, CI/CD | GitHub Actions (OIDC); the test suite as a merge and deploy gate; see below | Pushing to `main` builds, tests, and deploys automatically | |
 
@@ -56,13 +56,72 @@ Milestone 6 adds the gate that stands between customers, the agents, and the led
   safely (bounded concurrency and requests per second) without exhausting connection pools,
   and retries with backoff; messages that keep failing go to a dead-letter queue for people.
 
+**Known incidents bypass the agents.** When the platform already knows why a group of
+transactions failed, an agent has nothing to investigate (`docs/LEARNINGS.md`, Part 2, entry A).
+- Operations register an incident: transactions from a given source in a given time window
+  failed for a verified reason (for example an ATM cluster with `ATM_DISPENSER_TIMEOUT`).
+- The gate checks each incoming dispute against the incident registry before it reaches the
+  queue. A match calls no model: the dispute goes straight to the deterministic refund path.
+- A batch job refunds every affected transaction under the same idempotency keys, including
+  those of customers who never filed a dispute.
+
 Planned steps:
-- **Step 9:** dispute store and deduplication key in the supervisor (`claim`, `complete`,
-  `release`), with tests for 10 simultaneous identical requests.
-- **Step 10:** asynchronous intake: queue, worker, `202 Accepted`, and status endpoint.
-- **Step 11:** refund execution in Core Systems (the first ledger write) with an idempotency
-  key, and the rate-limited approval drain with a dead-letter queue.
+- **Step 9 (done):** dispute store and deduplication key in the supervisor (`claim`,
+  `complete`, `release`) on Redis, with tests for 10 simultaneous identical requests (ADR-0015).
+- **Step 10a (done, ADR-0016):** PostgreSQL dispute records, two separate statuses, `202
+  Accepted`, and a status endpoint; processing starts at once inside the supervisor. The
+  evaluation submits and polls: 10 of 10, accepted in about 0.3 s, result in about 9 s.
+- **Step 10b (done, ADR-0017 and ADR-0018):** the queue and a separate worker.
+  - The supervisor's side issues its own 2-minute token to act for a customer, valid for one
+    transaction, signed by a key that stays in Key Vault.
+  - Disputes wait in an Azure Service Bus queue (a message is only the dispute ID; at most 2
+    deliveries, then the dead-letter queue). A `triage-worker` deployment runs them.
+  - The intake API may only send to the queue; the worker may only receive.
+  - Verified on the cluster: a polite worker stop, a force-killed worker (the dispute is
+    finished by another worker after the 5-minute lock), and a poison message (dead-lettered
+    after two deliveries).
+- **Step 11 (done):** paying approved refunds.
+  - Done: `POST /v1/core-banking/refunds` with a required idempotency key and the ledger's own
+    rules; the ledger moved to PostgreSQL so both Core Systems pods share it (ADR-0019);
+    verified on the cluster across pods.
+  - Done: the worker pays approved refunds from the saved decision; `refund_paid` only when the
+    ledger confirms; refusals go to a person; no answer is retried with the same key (ADR-0020).
+  - Done: approved refunds go through their own `refunds` queue to a `refund-payer` with no model
+    access, at a fixed pace, with a pause switch and a dead-letter queue (ADR-0021).
+- **Step 12 (done, ADR-0022):** known-incident fast path: an incident registry in Core Systems,
+  the check before the graph (zero model calls, the same refund policy), the batch refund job,
+  and evaluation scenarios that prove it. Verified on the cluster.
 - Azure resources use Entra ID and Workload Identity, with no connection strings (ADR-0001).
+
+## Milestone 7: the demo UI
+
+- A Streamlit app simulating the Nequi app: submit a dispute, watch the investigation, read the
+  outcome and the customer message, and open the Langfuse trace.
+- **Seeing progress.** The backend consumes `graph.stream(..., stream_mode="updates")` to
+  receive each node's update as it happens. Execution events are for monitoring the run;
+  what the customer sees is the explicitly stored *business status* (Milestone 6, Step 10),
+  never a guess from which node is running. With a checkpointer configured, the state of a
+  dispute can also be inspected with `get_state`, and a human approval can pause and resume
+  the graph.
+- **Make the fast path visible** ([DEMO_SCRIPT.md](DEMO_SCRIPT.md), scenario 2). A dispute
+  decided by a confirmed incident shows a "decided without a model" badge, the incident and who
+  confirmed it, a model-call count of 0 and a cost of $0, and the policy checks it still passed.
+  Shown side by side with an uncovered dispute that goes through the agents.
+- The UI follows the live demo script, scenario by scenario.
+- **An evaluation dashboard** showing how the two key numbers are built, so anyone can check them:
+
+  | Number | How it is calculated | Latest run |
+  |---|---|---|
+  | Evaluated requests | disputes in the run | 12 |
+  | Successful requests | disputes with the expected outcome | 12 |
+  | **Success rate** | successful ÷ evaluated: *is it right?* | 100% |
+  | Total cost | every model call in the run, retries and wrong answers included | $0.1486 |
+  | **Cost per success** | total cost ÷ successful: *what does each right answer cost?* | $0.0124 |
+
+  Success rate and cost per success are shown side by side, because neither is enough alone: a
+  cheap system that often fails can look fine on cost, and an always-right one can be too
+  expensive to run. Shown per run over time (`evals/results/*.json`), with time to accept and
+  time to result next to them, and the fast-path disputes counted separately (0 model calls, $0).
 
 ## Milestone 8: the three-tier defensive barrier
 
@@ -83,3 +142,34 @@ $0.0143 per success.
 Still to do in Milestone 8: run the unit tests and the evaluation in GitHub Actions as required
 checks; more scenarios, including conflicting and stale evidence (`docs/LEARNINGS.md`, Part 2,
 entry C); several runs per scenario to measure decision agreement.
+
+**A background LLM judge** ([#10](https://github.com/mangeleth/nequi-bank-agent-demo/issues/10)). Deterministic checks cannot tell whether an
+explanation is supported by the evidence, so every finished triage is also judged:
+- When a run finishes, a judging job is put on a queue (a Redis stream).
+- A background worker takes the job and calls a judge model with the question, the candidate
+  answer, the tool evidence of that run, and a rubric: **groundedness** (every factual claim has
+  evidence), **completeness** (addresses the question or states what is unknown), **clarity**
+  (understandable; extra length earns no credit). The candidate text and the evidence are
+  treated as data, not instructions. The judge returns pass or fail per criterion with a brief
+  reason.
+- The verdict is stored in PostgreSQL next to the dispute, and the UI (Milestone 7) shows a
+  table of disputes with their judge results.
+- The judge runs after the customer has their answer: it measures quality and raises alerts;
+  it does not block or change a decision.
+- **Generalization and drift:** a held-out labelled set the rubric was never tuned on (does the
+  judge reject an unsupported "bank rejection" after we fixed "insufficient funds"?), and the
+  fixed calibration set re-run on a schedule and after every judge change. The UI shows a judge
+  health panel: agreement and unsafe passes on the tuning set and the held-out set, over time.
+- **Calibration** against answers labelled PASS or FAIL by people: report the agreement rate,
+  the number of **unsafe passes** (a person said FAIL, the judge said PASS), and each
+  disagreeing case, per rubric criterion. Re-run whenever the judge's prompt or model changes.
+
+## Backlog (not scheduled)
+
+| Issue | What |
+|---|---|
+| [#6](https://github.com/mangeleth/nequi-bank-agent-demo/issues/6) | Verify evidence timing: a decision can be made on a stale ledger reading |
+| [#7](https://github.com/mangeleth/nequi-bank-agent-demo/issues/7) | Exercise and report a claimed amount that differs from the ledger |
+| [#8](https://github.com/mangeleth/nequi-bank-agent-demo/issues/8) | Unresolved disputes should state what is known and what remains uncertain |
+| [#9](https://github.com/mangeleth/nequi-bank-agent-demo/issues/9) | Compare retry policies by total spending and cost per success |
+| [#11](https://github.com/mangeleth/nequi-bank-agent-demo/issues/11) | Diagnostics step: find the failure reason when the transaction record does not have one |

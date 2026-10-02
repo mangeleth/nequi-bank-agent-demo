@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster test guard-clean build push deploy smoke release
+.PHONY: test-db test-servicebus venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token internal-key-local run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster failure-tests failure-test-kill redis-image postgres-image postgres-password ledger-password ledger-db incident-refunds signing-key signing-grant signing-key-publish servicebus-create sb-grant demo-reset test guard-clean validate build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -12,6 +12,24 @@ venv:
 ## Run the unit tests
 test:
 	.venv/bin/python -m pytest -q
+
+## Run the tests, including the PostgreSQL store, against a throwaway PostgreSQL in Docker
+test-db:
+	@docker rm -f disputes-test-db >/dev/null 2>&1 || true
+	@docker run -d --rm --name disputes-test-db -e POSTGRES_PASSWORD=test -p 127.0.0.1:55432:5432 postgres:17-alpine >/dev/null
+	@for i in $$(seq 30); do docker exec disputes-test-db pg_isready -U postgres >/dev/null 2>&1 && break; sleep 1; done; sleep 1
+	@TEST_DATABASE_URL=postgresql://postgres:test@127.0.0.1:55432/postgres .venv/bin/python -m pytest -q; \
+		status=$$?; docker rm -f disputes-test-db >/dev/null; exit $$status
+
+## Test the Service Bus adapter against the real service, on a separate test queue. Uses your
+## own `az login`; the first run grants you access to that queue (it can take a minute to apply).
+test-servicebus:
+	@az servicebus queue create -g $(AKS_RESOURCE_GROUP) --namespace-name $(SERVICEBUS_NAMESPACE) -n disputes-test \
+		--lock-duration PT5M --max-delivery-count 2 -o none
+	@az role assignment create -o none --assignee $$(az ad signed-in-user show --query id -o tsv) \
+		--role "Azure Service Bus Data Owner" \
+		--scope $$(az servicebus queue show -g $(AKS_RESOURCE_GROUP) --namespace-name $(SERVICEBUS_NAMESPACE) -n disputes-test --query id -o tsv)
+	TEST_SERVICEBUS_NAMESPACE=$(SERVICEBUS_NAMESPACE) .venv/bin/python -m pytest -q tests/test_servicebus_queue.py
 
 ## Show the logged-in Azure account and active subscription
 az-check:
@@ -27,6 +45,7 @@ providers:
 	az provider register --namespace Microsoft.OperationalInsights --wait
 	az provider register --namespace Microsoft.ContainerRegistry --wait
 	az provider register --namespace Microsoft.KeyVault --wait
+	az provider register --namespace Microsoft.ServiceBus --wait
 
 ## Create the resource group (az group create is naturally idempotent)
 rg-create:
@@ -149,13 +168,17 @@ aoai-check:
 ## Give a service's pods their own Azure identity (Workload Identity, ADR-0001): a managed
 ## identity, permission to call Azure OpenAI, and trust in the service's Kubernetes ServiceAccount.
 ## Safe to run twice. Usage: make wi-create SERVICE=fraud-agent
+## A service that never calls a model gets no model access: make wi-create SERVICE=postgres WI_OPENAI=false
+WI_OPENAI ?= true
 wi-create:
 	az identity create -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) -l $(AZURE_LOCATION) -o none
-	az role assignment create -o none \
-		--assignee-object-id $$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) --query principalId -o tsv) \
-		--assignee-principal-type ServicePrincipal \
-		--role "Cognitive Services OpenAI User" \
-		--scope $$(az cognitiveservices account show -g $(AKS_RESOURCE_GROUP) -n $(AOAI_NAME) --query id -o tsv)
+	@if [ "$(WI_OPENAI)" = "true" ]; then \
+		az role assignment create -o none \
+			--assignee-object-id $$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) --query principalId -o tsv) \
+			--assignee-principal-type ServicePrincipal \
+			--role "Cognitive Services OpenAI User" \
+			--scope $$(az cognitiveservices account show -g $(AKS_RESOURCE_GROUP) -n $(AOAI_NAME) --query id -o tsv); \
+	else echo "id-$(SERVICE): no Azure OpenAI access (WI_OPENAI=false)"; fi
 	az identity federated-credential create -o none \
 		--name aks-$(K8S_NAMESPACE)-$(SERVICE) --identity-name id-$(SERVICE) -g $(AKS_RESOURCE_GROUP) \
 		--issuer $$(az aks show -g $(AKS_RESOURCE_GROUP) -n $(AKS_CLUSTER_NAME) --query oidcIssuerProfile.issuerUrl -o tsv) \
@@ -174,6 +197,119 @@ kv-grant:
 			--scope $$(az keyvault show -n $(KEYVAULT_NAME) --query id -o tsv)/secrets/$$secret; \
 	done
 
+## Copy the Redis image into our registry, so the cluster pulls only from ACR. Safe to run twice.
+redis-image:
+	az acr import --name $(ACR_NAME) --source docker.io/library/redis:7.4-alpine --image redis:7.4-alpine --force -o none
+
+## Copy the PostgreSQL image into our registry. Safe to run twice.
+postgres-image:
+	az acr import --name $(ACR_NAME) --source docker.io/library/postgres:17-alpine --image postgres:17-alpine --force -o none
+
+## Generate the database password straight into Key Vault. It is never printed or written to
+## disk. Skips if the secret exists (PostgreSQL only reads it when the database is first created).
+postgres-password:
+	@if az keyvault secret show --vault-name $(KEYVAULT_NAME) -n postgres-password -o none 2>/dev/null; then \
+		echo "postgres-password already exists in $(KEYVAULT_NAME) - not changed."; \
+	else \
+		az keyvault secret set --vault-name $(KEYVAULT_NAME) -n postgres-password \
+			--value "$$(openssl rand -base64 36 | tr -d '/+=\n')" -o none \
+		&& echo "postgres-password created in $(KEYVAULT_NAME)."; \
+	fi
+
+## Create the password of the ledger's database user in Key Vault (ADR-0019). Never printed;
+## skipped if it exists.
+ledger-password:
+	@if az keyvault secret show --vault-name $(KEYVAULT_NAME) -n ledger-password -o none 2>/dev/null; then \
+		echo "ledger-password already exists in $(KEYVAULT_NAME) - not changed."; \
+	else \
+		az keyvault secret set --vault-name $(KEYVAULT_NAME) -n ledger-password \
+			--value "$$(openssl rand -base64 36 | tr -d '/+=\n')" -o none \
+		&& echo "ledger-password created in $(KEYVAULT_NAME)."; \
+	fi
+
+## Create the ledger's own database and user inside the PostgreSQL pod. Safe to run again.
+ledger-db:
+	@scripts/ledger_db.sh $(K8S_NAMESPACE) $(KEYVAULT_NAME)
+
+SIGNING_KEY = supervisor-signing-key
+
+## Create the key the supervisor signs its own tokens with (ADR-0017). The private half is
+## generated inside Key Vault and cannot be read out. Grant its use with `make signing-grant`.
+## Skips creation if the key exists (a new version would invalidate the published public key).
+signing-key:
+	az role assignment create -o none --role "Key Vault Crypto Officer" \
+		--assignee $$(az ad signed-in-user show --query id -o tsv) \
+		--scope $$(az keyvault show -n $(KEYVAULT_NAME) --query id -o tsv)
+	@if az keyvault key show --vault-name $(KEYVAULT_NAME) -n $(SIGNING_KEY) -o none 2>/dev/null; then \
+		echo "$(SIGNING_KEY) already exists in $(KEYVAULT_NAME) - not changed."; \
+	else \
+		for i in 1 2 3 4 5 6; do \
+			az keyvault key create --vault-name $(KEYVAULT_NAME) -n $(SIGNING_KEY) --kty RSA --size 2048 \
+				--ops sign verify -o none 2>/dev/null && echo "$(SIGNING_KEY) created." && break; \
+			echo "waiting for the Crypto Officer role to take effect..."; sleep 20; \
+		done; \
+	fi
+
+## Allow a service's identity to sign with that key. Only the service that runs triages needs it.
+## Usage: make signing-grant SERVICE=triage-worker
+signing-grant:
+	az role assignment create -o none --role "Key Vault Crypto User" \
+		--assignee-object-id $$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) --query principalId -o tsv) \
+		--assignee-principal-type ServicePrincipal \
+		--scope $$(az keyvault show -n $(KEYVAULT_NAME) --query id -o tsv)/keys/$(SIGNING_KEY)
+
+## Publish the PUBLIC half of that key to the cluster, so the agents can check the signatures
+signing-key-publish:
+	@mkdir -p .local && rm -f .local/supervisor-signing-public.pem
+	az keyvault key download --vault-name $(KEYVAULT_NAME) -n $(SIGNING_KEY) --encoding PEM \
+		--file .local/supervisor-signing-public.pem
+	kubectl create configmap internal-jwt-public-key -n $(K8S_NAMESPACE) \
+		--from-file=internal-jwt-public.pem=.local/supervisor-signing-public.pem --dry-run=client -o yaml | kubectl apply -f -
+
+## Create the dispute queue (ADR-0018): a Service Bus namespace that accepts Entra ID logins only
+## (no connection strings), and a queue with a 5-minute lock and at most 2 deliveries, after
+## which a message moves to the dead-letter queue. Safe to run twice.
+servicebus-create:
+	@if az servicebus namespace show -g $(AKS_RESOURCE_GROUP) -n $(SERVICEBUS_NAMESPACE) -o none 2>/dev/null; then \
+		echo "Service Bus $(SERVICEBUS_NAMESPACE) already exists - skipping create."; \
+	else \
+		az servicebus namespace create -g $(AKS_RESOURCE_GROUP) -n $(SERVICEBUS_NAMESPACE) -l $(AZURE_LOCATION) \
+			--sku Basic --disable-local-auth true -o none; \
+	fi
+	az servicebus queue create -g $(AKS_RESOURCE_GROUP) --namespace-name $(SERVICEBUS_NAMESPACE) -n $(SERVICEBUS_QUEUE) \
+		--lock-duration PT5M --max-delivery-count 2 --enable-dead-lettering-on-message-expiration true -o none
+	@# Approved refunds (ADR-0021): a shorter lock (a payment takes seconds, not a whole triage) and
+	@# more deliveries, so a ledger that is briefly down does not send every refund to a person.
+	@# --max-delivery-count must equal REFUND_MAX_DELIVERIES in services/supervisor/payments.py.
+	az servicebus queue create -g $(AKS_RESOURCE_GROUP) --namespace-name $(SERVICEBUS_NAMESPACE) -n $(REFUNDS_QUEUE) \
+		--lock-duration PT1M --max-delivery-count 5 --enable-dead-lettering-on-message-expiration true -o none
+
+## Allow an identity to send to OR receive from ONE queue, never both.
+## Usage: make sb-grant SERVICE=supervisor SB_ROLE=Sender
+##        make sb-grant SERVICE=triage-worker SB_ROLE=Receiver
+##        make sb-grant SERVICE=triage-worker SB_ROLE=Sender QUEUE=refunds
+SB_QUEUE = $(or $(QUEUE),$(SERVICEBUS_QUEUE))
+sb-grant:
+	az role assignment create -o none \
+		--assignee-object-id $$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) --query principalId -o tsv) \
+		--assignee-principal-type ServicePrincipal \
+		--role "Azure Service Bus Data $(SB_ROLE)" \
+		--scope $$(az servicebus queue show -g $(AKS_RESOURCE_GROUP) --namespace-name $(SERVICEBUS_NAMESPACE) -n $(SB_QUEUE) --query id -o tsv)
+
+## Refund every transaction a confirmed incident covers (ADR-0022), run inside a Core Systems pod.
+## A dry run unless EXECUTE=true:  make incident-refunds INCIDENT=INC-20261001-01 [EXECUTE=true]
+INCIDENT ?= INC-20261001-01
+MAX_TOTAL ?= 1000000.00
+incident-refunds:
+	kubectl exec -n $(K8S_NAMESPACE) deploy/core-systems -- python -m services.core_systems.incident_refunds \
+		$(INCIDENT) --max-total $(MAX_TOTAL) $(if $(filter true,$(EXECUTE)),--execute,)
+
+## Forget every dispute: gate keys in Redis and records in PostgreSQL (demo and evaluation only)
+demo-reset:
+	kubectl exec -n $(K8S_NAMESPACE) deploy/redis -- redis-cli FLUSHDB
+	kubectl exec -n $(K8S_NAMESPACE) postgres-0 -- psql -q -U disputes -d disputes -c "TRUNCATE disputes CASCADE"
+	kubectl exec -n $(K8S_NAMESPACE) deploy/core-systems -- python -m services.core_systems.adapters.postgres reset
+
 ## Publish the demo identity provider's PUBLIC key to the cluster (it verifies tokens; not a secret)
 jwt-publish:
 	@test -f .local/jwt-public.pem || .venv/bin/python scripts/demo_token.py user-1001 >/dev/null
@@ -189,6 +325,15 @@ TX ?= TX-20261001000001
 ## Print a 15-minute login token for a synthetic customer (creates .local/ keys on first use)
 demo-token:
 	@.venv/bin/python scripts/demo_token.py $(USER_ID)
+
+## Key pair for the supervisor's own tokens, for LOCAL runs only (the cluster's key lives in Key Vault)
+internal-key-local:
+	@mkdir -p .local
+	@test -f .local/internal-jwt-private.pem || ( \
+		openssl genpkey -quiet -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out .local/internal-jwt-private.pem && \
+		chmod 600 .local/internal-jwt-private.pem && \
+		openssl pkey -in .local/internal-jwt-private.pem -pubout -out .local/internal-jwt-public.pem && \
+		echo "created .local/internal-jwt-*.pem" )
 
 run-core:
 	.venv/bin/uvicorn services.core_systems.app:app --port 8001
@@ -221,15 +366,34 @@ eval:
 ## Evaluate the system deployed on AKS, through a temporary port-forward to the supervisor
 eval-cluster:
 	@mkdir -p .local
+	@$(MAKE) --no-print-directory demo-reset
 	@kubectl port-forward -n $(K8S_NAMESPACE) svc/supervisor 18004:80 >/dev/null 2>&1 & echo $$! > .local/port-forward.pid
 	@sleep 4
 	@$(MAKE) --no-print-directory eval SUPERVISOR_URL=http://127.0.0.1:18004 EVAL_LABEL=aks; status=$$?; \
 		kill $$(cat .local/port-forward.pid) 2>/dev/null; rm -f .local/port-forward.pid; exit $$status
 
 # ---------------------------------------------------------------------------------------------
+# Failure tests on the deployed system (ADR-0018)
+# ---------------------------------------------------------------------------------------------
+FAILURE_TEST = mkdir -p .local; \
+	kubectl port-forward -n $(K8S_NAMESPACE) svc/supervisor 18004:80 >/dev/null 2>&1 & echo $$! > .local/port-forward.pid; \
+	sleep 4; status=0; for t in $(1); do .venv/bin/python scripts/failure_tests.py $$t || status=1; \
+		kubectl rollout status deployment/triage-worker -n $(K8S_NAMESPACE) --timeout=180s >/dev/null; done; \
+	kill $$(cat .local/port-forward.pid) 2>/dev/null; rm -f .local/port-forward.pid; exit $$status
+
+## A polite worker stop (as in a deploy) and a poison message
+failure-tests:
+	@$(call FAILURE_TEST,graceful poison)
+
+## Force-kill the workers mid-run and wait for the queue to redeliver (about 5 minutes)
+failure-test-kill:
+	@$(call FAILURE_TEST,kill)
+
+# ---------------------------------------------------------------------------------------------
 # Delivery (ADR-0004): make release SERVICE=core-systems
 # ---------------------------------------------------------------------------------------------
 SERVICE ?= core-systems
+WORKLOAD ?= deployment# statefulset for postgres
 SERVICE_DIR = services/$(subst -,_,$(SERVICE))
 IMAGE_TAG := $(shell git rev-parse --short HEAD)
 IMAGE = $(ACR_NAME).azurecr.io/$(SERVICE):$(IMAGE_TAG)
@@ -238,6 +402,14 @@ IMAGE = $(ACR_NAME).azurecr.io/$(SERVICE):$(IMAGE_TAG)
 guard-clean:
 	@git diff --quiet HEAD -- && test -z "$$(git ls-files --others --exclude-standard)" \
 		|| (echo "Uncommitted changes: commit first, image tags must map to a commit (ADR-0004)"; exit 1)
+
+## Check that every Kubernetes manifest is well-formed after its placeholders are filled.
+## Catches a broken file before anything is built or applied.
+validate:
+	@for f in k8s/namespace.yaml k8s/*/*.yaml; do \
+		IMAGE=x IMAGE_TAG=x WI_CLIENT_ID=x AZURE_TENANT_ID=x envsubst < $$f | kubectl apply --dry-run=client -f - >/dev/null \
+			|| { echo "INVALID MANIFEST: $$f"; exit 1; }; \
+	done; echo "manifests valid"
 
 ## Build the service image from the repo root (so it can include shared/)
 build:
@@ -248,14 +420,18 @@ push: acr-login
 
 ## Apply the namespace and the service manifests. ${...} placeholders are filled from .env, the
 ## image is pinned to this commit, and WI_CLIENT_ID is the service's managed identity (if any).
+## Config and secret mounts are applied BEFORE the workload: a pod reads them once, when it
+## starts, so a pod created first would start with the old ones.
+RENDER = IMAGE=$(IMAGE) IMAGE_TAG=$(IMAGE_TAG) WI_CLIENT_ID=$$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) --query clientId -o tsv 2>/dev/null) \
+	AZURE_TENANT_ID=$$(az account show --query tenantId -o tsv) \
+	envsubst '$$IMAGE $$IMAGE_TAG $$SERVICEBUS_NAMESPACE $$SERVICEBUS_QUEUE $$REFUNDS_QUEUE $$ACR_NAME $$WI_CLIENT_ID $$AZURE_TENANT_ID $$KEYVAULT_NAME $$AOAI_NAME $$AOAI_DEPLOYMENT $$AOAI_API_VERSION $$JWT_ISSUER $$JWT_AUDIENCE $$LANGFUSE_BASE_URL'
+WORKLOAD_FILES = k8s/$(SERVICE)/deployment.yaml k8s/$(SERVICE)/statefulset.yaml
+
 deploy:
 	kubectl apply -f k8s/namespace.yaml
-	cat k8s/$(SERVICE)/*.yaml \
-		| IMAGE=$(IMAGE) WI_CLIENT_ID=$$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) --query clientId -o tsv 2>/dev/null) \
-		  AZURE_TENANT_ID=$$(az account show --query tenantId -o tsv) \
-		  envsubst '$$IMAGE $$WI_CLIENT_ID $$AZURE_TENANT_ID $$KEYVAULT_NAME $$AOAI_NAME $$AOAI_DEPLOYMENT $$AOAI_API_VERSION $$JWT_ISSUER $$JWT_AUDIENCE $$LANGFUSE_BASE_URL' \
-		| kubectl apply -f -
-	kubectl rollout status deployment/$(SERVICE) -n $(K8S_NAMESPACE) --timeout=180s
+	cat $(filter-out $(WORKLOAD_FILES),$(wildcard k8s/$(SERVICE)/*.yaml)) | $(RENDER) | kubectl apply -f -
+	cat $(filter $(WORKLOAD_FILES),$(wildcard k8s/$(SERVICE)/*.yaml)) | $(RENDER) | kubectl apply -f -
+	kubectl rollout status $(WORKLOAD)/$(SERVICE) -n $(K8S_NAMESPACE) --timeout=240s
 
 ## Call the service from inside the cluster via its ClusterIP DNS name
 smoke:
@@ -276,12 +452,12 @@ smoke-ledger:
 		-H "Content-Type: application/json" \
 		-d '{"transaction_id":"TX-20261001000001","reason":"failed_transfer","claimed_amount":"50000.00"}'
 
-## End-to-end check of the whole system through the deployed supervisor
+## Submit a dispute to the deployed supervisor (answers 202; follow it with GET /v1/disputes/<id>)
 smoke-triage:
-	scripts/smoke.sh $(K8S_NAMESPACE) http://supervisor/v1/disputes/triage \
+	scripts/smoke.sh $(K8S_NAMESPACE) http://supervisor/v1/disputes \
 		-H "Authorization: Bearer $$(.venv/bin/python scripts/demo_token.py $(USER_ID))" \
 		-H "Content-Type: application/json" \
 		-d '{"transaction_id":"$(TX)","reason":"failed_transfer","claimed_amount":"50000.00"}'
 
-## Full pipeline: clean tree -> tests -> build -> push -> deploy -> smoke
-release: guard-clean test build push deploy smoke
+## Full pipeline: clean tree -> tests -> manifests valid -> build -> push -> deploy -> smoke
+release: guard-clean test validate build push deploy smoke

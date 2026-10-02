@@ -14,7 +14,7 @@ SCENARIO = {
     "id": "small-failed-transfer",
     "request": {"transaction_id": TX, "reason": "failed_transfer", "claimed_amount": "50000.00", "description": ""},
     "expected": {
-        "http_status": 200, "status": "resolved", "decision": "refund_recommended", "policy_route": "auto_approved",
+        "http_status": 200, "status": "refund_approved", "decision": "refund_recommended", "policy_route": "auto_approved",
         "required_tool_calls": [{"name": "get_transaction", "args": {"transaction_id": TX}},
                                 {"name": "get_risk_signals", "args": {"transaction_id": TX}}],
     },
@@ -28,12 +28,15 @@ def call(name: str, tx: str = TX, output: str = "") -> dict:
 def run(**overrides) -> dict:
     base = {
         "http_status": 200,
+        "execution_status": "finished",
+        "dispute_status": "refund_approved",
+        "accept_ms": 300,
         "elapsed_ms": 9000,
         "total_cost_usd": 0.019,
         "total_tokens": 5700,
         "tool_calls": [call("get_transaction", output=LEDGER_OUTPUT), call("get_risk_signals", output=RISK_OUTPUT)],
         "body": {
-            "status": "resolved",
+            "status": "refund_approved",
             "verdict": {"decision": "refund_recommended", "explanation": "50,000.00 COP was debited and 0.00 credited."},
             "approval": {"route": "auto_approved"},
             "fraud": {"signals": ["Engine score 0.08", "Recipient account is 900 days old"], "rationale": "Low risk."},
@@ -153,3 +156,57 @@ def test_retries_are_counted_from_the_reported_path():
 def test_summary_reports_spending_and_cost_per_success_together():
     summary = summarize([evaluate(run(), SCENARIO)])
     assert {"successes", "agent_retries", "total_cost_usd", "cost_per_success_usd"} <= set(summary)
+
+
+def test_a_duplicate_must_be_a_replay_and_a_first_submission_must_not():
+    duplicate = SCENARIO | {"expected": SCENARIO["expected"] | {"replay": True, "required_tool_calls": []}}
+    replayed = run(replayed=True, tool_calls=[], total_cost_usd=0, total_tokens=0)
+
+    assert evaluate(replayed, duplicate)["task_success"] is True
+    assert evaluate(run(), duplicate)["task_success"] is False  # the models ran again for a duplicate
+    assert evaluate(replayed, SCENARIO)["task_success"] is False  # a first submission answered from a stale store
+    assert evaluate(replayed, duplicate)["cost_usd"] == 0
+
+
+def test_a_run_that_failed_is_not_a_success_even_with_a_polite_answer():
+    assert evaluate(run(execution_status="failed"), SCENARIO)["task_success"] is False
+
+
+def test_the_stored_dispute_must_agree_with_its_result():
+    assert evaluate(run(dispute_status="pending_human_approval"), SCENARIO)["task_success"] is False
+
+
+def test_accepted_with_202_is_scored_like_any_accepted_dispute():
+    scenario = SCENARIO | {"expected": SCENARIO["expected"] | {"http_status": 202}}
+    result = evaluate(run(http_status=202), scenario)
+    assert (result["task_success"], result["groundedness"], result["accept_ms"]) == (True, 1.0, 300)
+
+
+def _incident_run(model_calls: int, incident_id: str | None = "INC-20261001-01") -> dict:
+    body = {"status": "refund_paid", "verdict": {"decision": "refund_recommended"},
+            "approval": {"route": "auto_approved"},
+            "customer_message": "This transfer was affected by a confirmed problem on our side: x.",
+            "incident": {"incident_id": incident_id} if incident_id else None, "steps": []}
+    return {"http_status": 202, "body": body, "execution_status": "finished", "dispute_status": "refund_paid",
+            "tool_calls": [], "elapsed_ms": 900, "accept_ms": 300, "total_cost_usd": 0.0, "total_tokens": 0,
+            "model_calls": model_calls}
+
+
+INCIDENT_SCENARIO = {
+    "id": "known-incident-fast-path",
+    "request": {"transaction_id": "TX-20261001000009", "reason": "failed_transfer", "claimed_amount": "35000.00"},
+    "expected": {"http_status": 202, "status": "refund_paid", "decision": "refund_recommended",
+                 "policy_route": "auto_approved", "required_tool_calls": [],
+                 "customer_message_contains": "confirmed problem on our side",
+                 "incident_id": "INC-20261001-01", "max_model_calls": 0},
+}
+
+
+def test_the_fast_path_scenario_passes_only_with_zero_model_calls():
+    assert evaluate(_incident_run(model_calls=0), INCIDENT_SCENARIO)["task_success"]
+    assert not evaluate(_incident_run(model_calls=3), INCIDENT_SCENARIO)["task_success"]  # the agents ran
+
+
+def test_the_fast_path_scenario_requires_the_incident_to_have_decided():
+    assert not evaluate(_incident_run(model_calls=0, incident_id=None), INCIDENT_SCENARIO)["task_success"]
+    assert evaluate(_incident_run(model_calls=0), INCIDENT_SCENARIO)["groundedness"] is None  # no model text

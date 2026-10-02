@@ -1,7 +1,8 @@
 """Run the evaluation scenarios against a running supervisor and the real model.
 
-For each scenario: log in as the synthetic customer, send the dispute, then read what the run
-actually did (tool calls, tokens, cost) from its Langfuse trace, and score it.
+For each scenario: log in as the synthetic customer, submit the dispute, poll its status until
+the run is over, then read what the run actually did (tool calls, tokens, cost) from its
+Langfuse trace, and score it.
 
 Usage:  make eval            # services running locally (make run-*)
         make eval-cluster    # the deployed system, through a port-forward
@@ -69,25 +70,57 @@ def _tool_call(observation: dict) -> dict:
             "output": str(observation.get("output") or "")}
 
 
-def run_scenario(supervisor: httpx.Client, langfuse: httpx.Client, scenario: dict) -> dict:
-    token = issue(scenario["user_id"])
-    started = time.monotonic()
-    response = supervisor.post("/v1/disputes/triage", json=scenario["request"],
-                               headers={"Authorization": f"Bearer {token}"})
-    elapsed_ms = round((time.monotonic() - started) * 1000)
-    try:
-        body = response.json()
-    except ValueError:
-        body = {}
+POLL_SECONDS = 0.5
+RESULT_TIMEOUT_SECONDS = 120
 
+
+def wait_for_result(supervisor: httpx.Client, dispute_id: str, headers: dict) -> dict:
+    """Poll the status endpoint, as the customer's app would, until the dispute has settled.
+
+    A finished run that is still `refund_approved` is not settled: the decision is saved and the
+    payment is in progress (ADR-0020). It ends as refund_paid, or with a person.
+    """
+    deadline = time.monotonic() + RESULT_TIMEOUT_SECONDS
+    view = {}
+    while time.monotonic() < deadline:
+        view = supervisor.get(f"/v1/disputes/{dispute_id}", headers=headers).json()
+        if view.get("execution_status") == "failed" or (
+                view.get("execution_status") == "finished" and view.get("status") != "refund_approved"):
+            break
+        time.sleep(POLL_SECONDS)
+    return view
+
+
+def run_scenario(supervisor: httpx.Client, langfuse: httpx.Client, scenario: dict) -> dict:
+    headers = {"Authorization": f"Bearer {issue(scenario['user_id'])}"}
+    started = time.monotonic()
+    response = supervisor.post("/v1/disputes", json=scenario["request"], headers=headers)
+    accept_ms = round((time.monotonic() - started) * 1000)  # how long the customer waits for "accepted"
+    try:
+        view = response.json()
+    except ValueError:
+        view = {}
+
+    # A replay is answered by the gate with the existing dispute: no model ran, and the trace it
+    # links to belongs to the original request, so it must not be counted again.
+    replayed = response.headers.get("idempotent-replay") == "true"
+    if response.status_code == 202:
+        view = wait_for_result(supervisor, view["dispute_id"], headers)
+    elapsed_ms = round((time.monotonic() - started) * 1000)  # submit until the result is stored
+
+    accepted = response.status_code in (200, 202)
+    result = (view.get("result") or {}) if accepted else view
     observations, complete = [], True
-    trace_url = body.get("trace_url") if isinstance(body, dict) else None
-    if trace_url:
-        observations, complete = fetch_trace(langfuse, trace_url.rsplit("/", 1)[1], expected_runs(body))
+    trace_url = result.get("trace_url") if accepted else None
+    if trace_url and not replayed:
+        observations, complete = fetch_trace(langfuse, trace_url.rsplit("/", 1)[1], expected_runs(result))
     generations = [o for o in observations if o.get("type") == "GENERATION"]
     return {
         "http_status": response.status_code,
-        "body": body,
+        "body": result,  # the TriageResult stored on the dispute (or the error body)
+        "execution_status": view.get("execution_status") if accepted else None,
+        "dispute_status": view.get("status") if accepted else None,
+        "accept_ms": accept_ms,
         "elapsed_ms": elapsed_ms,
         "tool_calls": [_tool_call(o) for o in observations if o.get("type") == "TOOL"],
         "model_calls": len(generations),
@@ -95,6 +128,7 @@ def run_scenario(supervisor: httpx.Client, langfuse: httpx.Client, scenario: dic
         "total_tokens": sum((g.get("usageDetails") or {}).get("total", 0) or 0 for g in generations),
         "trace_url": trace_url,
         "trace_complete": complete,
+        "replayed": replayed,
     }
 
 
@@ -120,14 +154,15 @@ def markdown_report(results: list[dict], summary: dict, meta: dict) -> str:
         f"| Cost per request | {_fmt(summary['cost_per_request_usd'], '${:.4f}')} |",
         f"| **Cost per success** | {_fmt(summary['cost_per_success_usd'], '${:.4f}')} |",
         f"| Total tokens | {summary['total_tokens']:,} |",
-        f"| Latency, median / max | {summary['median_latency_ms'] / 1000:.1f} s / {summary['max_latency_ms'] / 1000:.1f} s |",
+        f"| Time to accept (the 202), median | {summary['median_accept_ms']} ms |",
+        f"| Time to result, median / max | {summary['median_latency_ms'] / 1000:.1f} s / {summary['max_latency_ms'] / 1000:.1f} s |",
         "",
         "| Scenario | Success | Tools | Grounded | Latency | Cost | Outcome |",
         "|---|---|---|---|---|---|---|",
     ]
     for r in results:
         a = r["actual"]
-        outcome = (f"{a['status']}, {a['decision']}, policy {a['policy_route']}" if a["http_status"] == 200
+        outcome = (f"{a['status']}, {a['decision']}, policy {a['policy_route']}" if a["http_status"] in (200, 202)
                    else f"HTTP {a['http_status']}")
         lines.append(
             f"| {r['id']} | {'yes' if r['task_success'] else '**NO**'} | {'yes' if r['tool_call_correct'] else '**NO**'} "
@@ -174,6 +209,7 @@ def main() -> int:
     print(f"\ntask success {_fmt(summary['task_success_rate'])}  |  tools correct {_fmt(summary['tool_call_correct_rate'])}"
           f"  |  groundedness {_fmt(summary['mean_groundedness'])}")
     print(f"successes {summary['successes']}/{summary['scenarios']}  |  agent retries {summary['agent_retries']}")
+    print(f"accepted in {summary['median_accept_ms']} ms (median)  |  result in {summary['median_latency_ms'] / 1000:.1f} s (median)")
     print(f"total ${summary['total_cost_usd']:.4f}  |  per request {_fmt(summary['cost_per_request_usd'], '${:.4f}')}"
           f"  |  per success {_fmt(summary['cost_per_success_usd'], '${:.4f}')}")
     print(f"report: {stem.with_suffix('.md').relative_to(ROOT.parent)}")

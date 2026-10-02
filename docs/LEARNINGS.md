@@ -144,6 +144,69 @@ measured zero.
 
 See [ADR-0014](adr/0014-evaluation-against-the-real-model.md).
 
+## 9. A pod started before its secret list was updated (Milestone 6)
+
+**What happened.** The supervisor needed a third Key Vault secret, the database password. The
+new pod crashed at startup: the password file was not there, although the secret list had been
+updated in the same deploy. `make deploy` applied every manifest in one stream, in file-name
+order, so the Deployment was applied before the updated `SecretProviderClass`. The pod was
+created in between and mounted the old list. A Key Vault mount is fixed when the pod starts, so
+restarting the container changed nothing.
+
+**What caught it.** The rollout never became ready, and the old pods kept serving
+(`maxUnavailable: 0`), so nothing was down. The pod's log named the missing file.
+
+**What changed.** `make deploy` now applies configuration and secret mounts first and the
+workload last. The stuck pod was replaced.
+
+**The lesson.** A pod reads its configuration and its mounted secrets once, when it starts.
+Order matters in a deploy, and a rolling update that keeps the old version serving turns a bad
+release into a non-event.
+
+## 10. A scripted edit cut the name off a Kubernetes manifest (Milestone 6)
+
+**What happened.** A script that rewrote the supervisor's ConfigMap searched for the text
+`data:` to find where the settings begin. It matched the end of `metadata:` first and replaced
+everything after it, removing the ConfigMap's name and labels.
+
+**What caught it.** Kubernetes refused the file ("resource name may not be empty"), so nothing
+was applied and the running pods were untouched. The worker had already been deployed in the
+right order, so the system kept working throughout.
+
+**What changed.** The file was rewritten, and `make release` now runs `make validate` first:
+every manifest is rendered and checked with a client-side dry run before anything is built.
+
+**The lesson.** Validate generated or edited configuration before it reaches the deploy step,
+and treat "the cluster rejected it" as a late safety net, not the check.
+
+## 11. A fake hid a contract mismatch; the payment design contained it (Milestone 6)
+
+**What happened.** On the first deploy of refund payments, every approved dispute went to a
+person, although the ledger had paid. The ledger's confirmation describes the whole refund
+(customer, transaction, amount, ...). The supervisor's `RefundPayment` contract forbids fields it
+does not list, so the client called a successful payment "malformed" and treated it as "no
+answer".
+
+**Why the tests passed.** The test fake returned a ready-made `RefundPayment`. It never produced
+the ledger's real reply, so the client's parsing of that reply was never tested.
+
+**Why nothing bad happened.** The design assumed "no answer" could mean "paid":
+- the retry used the same idempotency key, and the ledger returned the same refund (one row each)
+- after the last delivery the dispute went to a person, with the key to look up in the ledger
+- the customer was told "could not be paid automatically", never "paid"
+
+**What changed.**
+- The client keeps the fields it records and checks that the confirmation is for the
+  transaction, amount, and key it asked for.
+- New tests run the supervisor's client against the real Core Systems app. Checked: the test
+  fails on the old client.
+- The evaluator waits until a dispute has settled; a finished run that is still
+  `refund_approved` is mid-payment.
+
+**The lesson.** Where two services meet, test at least once against the real other side, not
+only a fake. And design the money path so that a bug in reading an answer fails safe: the
+unknown case must never pay twice and never claim "paid".
+
 # Part 2: design principles (study notes)
 
 ## A. Know when not to use an agent: the known-incident fast path
@@ -190,11 +253,13 @@ not the complaints.
 use AI. The order of preference is: a database fact, then a deterministic rule, then an agent
 for what remains ambiguous.
 
-**What this repository does today.** Every dispute goes through the supervisor and the agents;
-there is no known-incident fast path. The pieces it would build on exist: the refund policy is
-already deterministic code (ADR-0007), and Milestone 6 adds the safety gate, the queue, and the
-idempotent refund execution that a batch refund needs. A fast path would be one more check at
-that gate, before the queue.
+**What this repository does today** (Milestone 6, Step 12, ADR-0022). A confirmed incident
+covers transactions by failure code, bank, and time window. Before the graph runs, the worker asks
+whether one covers the disputed transaction; if so, code reads the ledger and the risk engine and
+runs the same refund policy, with zero model calls. Measured on the cluster: 0.2 s and $0 for a
+covered dispute, against about 11 s and $0.019 for the same failure one minute outside the window.
+A batch job refunds every covered transaction, including undisputed ones, and the ledger makes
+sure nothing is paid twice.
 
 ## B. Measure cost per success, not cost per request
 
@@ -311,3 +376,146 @@ Milestone 6. Tests check that no message uses a verb for an action that has not 
 the evaluation checks the message on the deployed system. The "investigation is running"
 wording has no use yet: a triage is a single request, so there is no running state to report
 until intake becomes asynchronous (Milestone 6).
+
+## E. "The agent finished" is not "the customer's issue is resolved"
+
+Two statuses answer two different questions, and merging them produces false statements.
+
+| | Question it answers | Who reads it | Typical values |
+|---|---|---|---|
+| **Execution status** | What happened to this run of the graph? | Engineers, operations | queued, running, finished, failed |
+| **Business status** | Where does the customer's dispute stand? | The customer, support, auditors | received, investigating, pending human approval, refund approved, refund paid, closed |
+
+Why they must be separate:
+- A run can **finish successfully** and leave the dispute **unresolved**: the graph did its job
+  by sending the case to a person. Reporting "finished" as "resolved" tells the customer their
+  problem is over when a human has not looked at it.
+- A run can **fail** while the dispute is fine: a retry or a person picks it up, and the customer
+  should never see "failed".
+- They change at different times and for different reasons. The business status changes on
+  events outside any run: a person approves, the ledger confirms a payment, a customer appeals.
+- A dispute outlives its runs. One dispute may have several runs (a retry, a re-run after new
+  evidence), so the business status belongs to a stored dispute record, not to a run.
+
+That last point is why the business status needs a **database**: Redis here holds claims and
+results that expire, a trace describes one run, and neither is the durable record of a
+dispute. The plan is PostgreSQL in Milestone 6, Step 10.
+
+**What this repository does today.** Every dispute is a row in PostgreSQL with both statuses
+stored separately (ADR-0016). There is no `resolved`: an automatically approved refund is
+`refund_approved`, and it becomes `refund_paid` only when the ledger confirms the payment
+(Milestone 6, Step 11). A run that fails leaves the dispute as `pending_human_approval`, and the
+customer message says "marked for review by a person". Every status change is in an audit table.
+
+## F. A correct status does not prove the explanation
+
+```python
+scores = {
+    "status_correct": predicted_status == expected_status,
+    "id_format_valid": bool(re.fullmatch(r"TX-\d{6}", transaction_id)),
+}
+# Neither check proves that this explanation is supported:
+explanation = "The transfer failed due to insufficient funds."
+```
+
+Deterministic checks verify the structured part of an answer. The free text beside it can still
+state something no record supports, and it is the part the customer reads.
+
+**Evaluate the explanation separately, against the evidence.** An LLM judge is the usual tool,
+and it is only trustworthy with three things:
+- **Evidence:** the judge sees exactly what the model had (the tool results), not its own
+  knowledge of the world.
+- **A rubric:** per claim, *supported*, *contradicted*, or *not found in the evidence*. A single
+  1-5 "quality" score cannot be acted on.
+- **Calibration:** hand-labelled examples the judge must score correctly. A judge is a model
+  too; its agreement with people is a number to report, not an assumption.
+
+Order of preference stays the same as everywhere else: a deterministic check where one is
+possible, a judge only for what cannot be checked by code.
+
+**Calibrating the judge.** A judge is a model, so it is measured against people before its
+verdicts are trusted. People label a set of answers PASS or FAIL; the judge labels the same set.
+
+```python
+cases = [
+    {"human": "FAIL", "judge": "PASS"},
+    {"human": "FAIL", "judge": "FAIL"},
+    {"human": "PASS", "judge": "PASS"},
+    {"human": "PASS", "judge": "FAIL"},
+]
+agreement = sum(c["human"] == c["judge"] for c in cases) / len(cases)                    # 50%
+unsafe_passes = sum(c["human"] == "FAIL" and c["judge"] == "PASS" for c in cases)       # 1
+```
+
+Overall agreement is useful, but which disagreements occurred tells you what to fix. The two
+kinds are not equally bad:
+
+| Disagreement | Meaning | Cost | Likely fix |
+|---|---|---|---|
+| Human FAIL, judge PASS (**unsafe pass**) | The judge let a bad answer through | A wrong answer reaches customers unnoticed. The one to drive to zero. | The rubric is too loose, or the judge was not shown the evidence it needed |
+| Human PASS, judge FAIL (false alarm) | The judge rejected a good answer | Reviewer time, and people stop trusting the alerts | The rubric is ambiguous or stricter than the people applying it |
+
+So a calibration report states three things: agreement, the count of unsafe passes, and the
+disagreeing cases themselves, read one by one. It is done per rubric criterion (a judge can be
+reliable on groundedness and poor on clarity), and repeated whenever the judge's prompt or
+model changes. Four cases illustrate the arithmetic; a real set needs enough FAIL examples for
+an unsafe-pass rate to mean something.
+
+**Generalization versus drift.** Two more questions about a judge, checked separately:
+
+| Concept | What we are checking | Example |
+|---|---|---|
+| **Generalization** | Does the judge work beyond the examples used to tune its rubric? | We corrected "insufficient funds"; can it also reject an unsupported "bank rejection"? |
+| **Drift** | Does the judge still behave today as it did when it was calibrated? | The judge model was updated, or disputes now include a new kind of transfer: do agreement and unsafe passes hold? |
+
+- *Generalization* is tested with a **held-out set**: labelled examples that were never used
+  while writing the rubric. Tuning the rubric until the tuning examples pass proves little; a
+  judge that only learned those examples fails on the next unsupported cause.
+- *Drift* is tested by **re-running the same fixed calibration set on a schedule** and after
+  every change to the judge's model or prompt, and comparing with the previous run.
+- Both belong on screen next to the judge's verdicts: agreement and unsafe passes on the tuning
+  set and on the held-out set, and the same numbers over time. A judge whose health cannot be
+  seen will be trusted or ignored for the wrong reasons.
+
+**What this repository does today.** The evaluation checks numbers only (*numeric*
+groundedness): every amount, score, and count the models write must appear in the tool results.
+A false cause with no number in it would pass. Core Systems returns no failure reason at all,
+so any cause a model states is unsupported by definition. The customer message avoids the
+problem by not using model text. The judge is planned for Milestone 8 ([#10](https://github.com/mangeleth/nequi-bank-agent-demo/issues/10)).
+
+## G. When a fact is missing, retrieve it, and prefer a lookup to an agent
+
+```python
+def route(state):
+    return "diagnostics" if state["failure_reason"] is None else END
+```
+
+A graph can branch on *what is missing*: if the transaction record has no failure reason, go to
+a diagnostics step that looks for one, and only then answer.
+
+Two points for the design:
+- **A lookup is a node, not an agent.** In the sketch above `diagnostics` calls one function and
+  returns its value. That needs no model. An agent earns its place only when the source is
+  unstructured (free-text logs) and someone has to interpret it.
+- **The step must be allowed to fail.** If diagnostics finds nothing, the honest answer is "the
+  transfer is marked as failed, but the available records don't show why" (entry D), not a
+  plausible guess.
+
+**What this repository does today.** The supervisor already branches on missing evidence for the
+ledger facts and the fraud assessment. It has no failure-reason data and no diagnostics step
+([#11](https://github.com/mangeleth/nequi-bank-agent-demo/issues/11)).
+
+## H. Showing progress to the customer
+
+- The backend reads `graph.stream(..., stream_mode="updates")` to receive each node's update as
+  the graph runs.
+- **Task events are for monitoring the execution** (which node ran, how long, did it fail).
+- **Explicitly stored business statuses are for explaining progress to the customer.** "Checking
+  additional records" is a status the system sets on purpose, not a translation of whichever
+  node happens to be running.
+- With a checkpointer configured, the saved state of a run can be inspected with `get_state`,
+  and a run can pause for a human and resume.
+
+**What this repository does today.** The triage is one request that returns when it is done,
+with the path taken in `steps`. There is no streaming, no checkpointer, and no stored status.
+These arrive with asynchronous intake (Milestone 6, Step 10) and the UI (Milestone 7).

@@ -59,13 +59,35 @@ class DisputeReason(StrEnum):
 
 
 class DisputeStatus(StrEnum):
-    """Lifecycle: RECEIVED -> INVESTIGATING -> (PENDING_HUMAN_APPROVAL ->) RESOLVED | REJECTED."""
+    """Business status: where the customer's dispute stands. Each value is a fact that has
+    happened, so there is no "resolved": an approved refund is not a paid refund.
+
+        RECEIVED -> INVESTIGATING -> CLOSED_NO_REFUND
+                                  -> REFUND_APPROVED -> REFUND_PAID   (the ledger confirmed it)
+                                                     -> PENDING_HUMAN_APPROVAL (the ledger refused it)
+                                  -> PENDING_HUMAN_APPROVAL -> REFUND_APPROVED | REJECTED
+    """
 
     RECEIVED = "received"
     INVESTIGATING = "investigating"
-    PENDING_HUMAN_APPROVAL = "pending_human_approval"
-    RESOLVED = "resolved"
-    REJECTED = "rejected"
+    PENDING_HUMAN_APPROVAL = "pending_human_approval"  # a person must decide
+    REFUND_APPROVED = "refund_approved"  # approved, not yet paid
+    REFUND_PAID = "refund_paid"  # the ledger confirmed the payment
+    CLOSED_NO_REFUND = "closed_no_refund"  # investigated; no refund is due
+    REJECTED = "rejected"  # a person refused the refund
+
+
+class ExecutionStatus(StrEnum):
+    """Execution status: what happened to the run of the graph. For engineers and operations.
+
+    Separate from the business status: a run can finish while the dispute still waits for a
+    person, and a run can fail without the customer's dispute being lost.
+    """
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    FINISHED = "finished"
+    FAILED = "failed"
 
 
 class RiskLevel(StrEnum):
@@ -194,7 +216,29 @@ class RefundApproval(Contract):
 
     @property
     def status(self) -> DisputeStatus:
-        return DisputeStatus.RESOLVED if self.route == ApprovalRoute.AUTO_APPROVED else DisputeStatus.PENDING_HUMAN_APPROVAL
+        if self.route == ApprovalRoute.AUTO_APPROVED:
+            return DisputeStatus.REFUND_APPROVED  # approved is not paid
+        return DisputeStatus.PENDING_HUMAN_APPROVAL
+
+
+class KnownIncident(Contract):
+    """A confirmed platform incident that covers the disputed transaction (ADR-0022). When one
+    exists, the dispute is decided by code: there is nothing left to investigate."""
+
+    incident_id: Annotated[str, Field(pattern=r"^INC-[0-9]{8}-[0-9]{2}$")]
+    title: str = Field(min_length=1, max_length=200)
+    confirmed_by: str = Field(min_length=1, max_length=100)
+
+
+class RefundPayment(Contract):
+    """The ledger's confirmation that an approved refund was paid. Copied from the ledger's
+    answer; the refund exists in the ledger under `refund_id`."""
+
+    refund_id: str
+    amount: Money
+    currency: Currency
+    executed_at: datetime
+    idempotency_key: str
 
 
 # --- End-to-end result ------------------------------------------------------------------------
@@ -208,9 +252,24 @@ class TriageResult(Contract):
     status: DisputeStatus
     verdict: DisputeVerdict | None = None  # the LLM's recommendation, if one was reached
     approval: RefundApproval | None = None  # the deterministic policy decision, for refunds
+    payment: RefundPayment | None = None  # set once the ledger confirms the refund was paid
+    incident: KnownIncident | None = None  # set when a confirmed incident decided it, without a model
     fraud: FraudAssessment | None = None
     ledger: LedgerReconciliation | None = None
     customer_message: str  # chosen by code from established facts; never model-written text
     escalation_reason: str | None = None  # for operations: why the dispute needs a person
     steps: list[str] = Field(default_factory=list)  # the path taken through the graph, in order
     trace_url: str | None = None  # Langfuse trace for this run
+
+
+class DisputeView(Contract):
+    """A dispute as returned by the API: the stored record, readable while it is still running."""
+
+    dispute_id: UUID
+    transaction_id: TransactionId
+    status: DisputeStatus  # business status: what the customer is told
+    execution_status: ExecutionStatus  # for operations; a customer-facing app would not show it
+    customer_message: str
+    result: TriageResult | None = None  # present once the run has finished
+    created_at: datetime
+    updated_at: datetime

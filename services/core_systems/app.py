@@ -2,7 +2,7 @@
 
 These are the systems of record that the Fraud and Ledger agents query through their tools.
 The data source is chosen at startup by CORE_SYSTEMS_BACKEND (ports & adapters, ADR-0008);
-today only `in_memory` (synthetic data) exists.
+`in_memory` (one process) or `postgres` (one ledger shared by every replica).
 
 Two front doors onto the same data: a REST API under /v1, and MCP tools at /mcp (ADR-0012).
 
@@ -16,32 +16,48 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from services.core_systems.api import core_banking, risk_engine
+from services.core_systems.api import core_banking, incidents, risk_engine
 from services.core_systems.api.mcp_server import build_mcp_app
 
 
 def _build_adapters(backend: str) -> tuple:
+    """The in-memory adapters. The PostgreSQL ledger is opened in `lifespan` (it needs a pool)."""
     if backend == "in_memory":
         from services.core_systems.adapters.in_memory import InMemoryLedger, InMemoryRisk
 
         return InMemoryLedger(), InMemoryRisk()
     # Fail fast at startup rather than serving with the wrong data source.
-    raise ValueError(f"unknown CORE_SYSTEMS_BACKEND={backend!r} (supported: in_memory)")
+    raise ValueError(f"unknown CORE_SYSTEMS_BACKEND={backend!r} (supported: in_memory, postgres)")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    app.state.ledger, app.state.risk = _build_adapters(os.environ.get("CORE_SYSTEMS_BACKEND", "in_memory"))
+    backend, pool = os.environ.get("CORE_SYSTEMS_BACKEND", "in_memory"), None
+    if backend == "postgres":
+        # One shared ledger for every replica (ADR-0019). Risk signals are read-only reference
+        # data and stay in memory.
+        from services.core_systems.adapters.in_memory import InMemoryRisk
+        from services.core_systems.adapters.postgres import open_postgres_ledger
+
+        app.state.ledger, pool = await open_postgres_ledger()
+        app.state.risk = InMemoryRisk()
+    else:
+        app.state.ledger, app.state.risk = _build_adapters(backend)
+    # Incidents are matched against the ledger's own transactions, so the ledger is the registry.
+    app.state.incidents = app.state.ledger
     # A fresh MCP app per startup; it reads the ledger adapter chosen above.
     mcp_app = build_mcp_app(lambda: app.state.ledger)
     async with mcp_app.router.lifespan_context(mcp_app):
         app.state.mcp_app = mcp_app
         yield
+    if pool is not None:
+        await pool.close()
 
 
 app = FastAPI(title="Nequi Core Systems", version="1.0.0", lifespan=lifespan)
 app.include_router(core_banking.router)
 app.include_router(risk_engine.router)
+app.include_router(incidents.router)
 
 
 @app.get("/healthz", include_in_schema=False)

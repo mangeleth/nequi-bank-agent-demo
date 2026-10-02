@@ -1,67 +1,82 @@
-"""Supervisor service: POST /v1/disputes/triage.
+"""Supervisor service: the intake API.
 
-Order of work for each request (ADR-0013):
+    POST /v1/disputes           accept a dispute: 202 Accepted and a dispute ID, at once
+    GET  /v1/disputes/{id}      where the dispute stands, and the result once the run has finished
+
+Order of work for POST (ADR-0013, ADR-0015, ADR-0016, ADR-0018):
   1. Authenticate: verify the JWT.
-  2. Authorize in code: the disputed transaction must belong to the caller (no model call yet).
-  3. Run the supervisor graph with a hard recursion limit, traced to Langfuse.
-  4. Return what was decided, the path taken, and a link to the trace.
+  2. Deduplicate: claim the key sha256(user_id, transaction_id) in Redis (the fast path).
+     A duplicate is pointed to the dispute that already exists and goes no further.
+  3. Authorize in code: the disputed transaction must belong to the caller.
+  4. Store the dispute in PostgreSQL (the unique key there is the guarantee).
+  5. Put the dispute ID on the queue and answer 202.
+
+A worker takes it from the queue and runs the triage (services/supervisor/triage.py). With the
+in-memory queue (tests, local runs) that worker runs inside this process; in the cluster it is
+a separate deployment and this service only accepts disputes.
 
 Run locally:  make run-supervisor
 """
 
+import asyncio
 import logging
 import os
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Annotated
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from langchain_core.language_models import BaseChatModel
-from langgraph.errors import GraphRecursionError
 
 from services.supervisor.clients import HttpSpecialists, Specialists, SpecialistUnavailable
-from services.supervisor.graph import RECURSION_LIMIT, TriageContext, TriageState, build_graph
-from services.supervisor.messages import customer_message
+from services.supervisor.dedup import DisputeGate, GateUnavailable, build_gate, dispute_key
+from services.supervisor.graph import RECURSION_LIMIT, build_graph
+from services.supervisor.messages import NEEDS_PERSON, RECEIVED
+from services.supervisor.payments import REFUND_MAX_DELIVERIES, RefundPayer
+from services.supervisor.queue import DisputeQueue, InMemoryQueue, ServiceBusQueue
+from services.supervisor.store import DisputeRecord, DisputeStore, open_store
+from services.supervisor.triage import RETRY_DELAY_SECONDS, TriageRunner
 from shared.auth import AuthError, AuthSettings, CallerIdentity, bearer_token, verify_token
+from shared.delegation import DelegationSettings, TokenSigner, build_signer
 from shared.refund_policy import RefundPolicyConfig
-from shared.schemas import Decision, DisputeRequest, DisputeStatus, TriageResult
+from shared.schemas import DisputeRequest, DisputeView
 from shared.tracing import Tracing, build_tracing
 
 log = logging.getLogger("supervisor")
 
-
-def _status(state: TriageState) -> DisputeStatus:
-    if state.get("escalation_reason"):
-        return DisputeStatus.PENDING_HUMAN_APPROVAL  # human operations take over
-    if (approval := state.get("approval")) is not None:
-        return approval.status  # resolved if auto-approved, otherwise pending a human
-    verdict = state.get("verdict")
-    if verdict is not None and verdict.decision == Decision.NO_ACTION:
-        return DisputeStatus.RESOLVED
-    return DisputeStatus.PENDING_HUMAN_APPROVAL  # escalate_fraud: fraud operations take over
+# A run with no status change for this long is treated as dead. It must be longer than the
+# queue's lock multiplied by its deliveries, so a dispute waiting for redelivery is not failed.
+STUCK_AFTER_SECONDS = 900
+SWEEP_EVERY_SECONDS = 60
 
 
-def _result(dispute: DisputeRequest, state: TriageState, trace_url: str | None) -> TriageResult:
-    verdict = state.get("verdict")
-    return TriageResult(
-        dispute_id=verdict.dispute_id if verdict else uuid4(),
-        transaction_id=dispute.transaction_id,
-        status=_status(state),
-        verdict=verdict,
-        approval=state.get("approval"),
-        fraud=state.get("fraud"),
-        ledger=state.get("ledger"),
-        customer_message=customer_message(
-            ledger=state.get("ledger"), verdict=verdict, approval=state.get("approval"),
-            escalated=bool(state.get("escalation_reason")),
-        ),
-        escalation_reason=state.get("escalation_reason"),
-        steps=state.get("steps", []),
-        trace_url=trace_url,
+async def _give_back(gate: DisputeGate, key: str) -> None:
+    try:
+        await gate.release(key)
+    except GateUnavailable as exc:
+        log.error("could not release a dispute key (it will expire): %s", exc)
+
+
+def _replay(record: DisputeRecord) -> JSONResponse:
+    """Answer a duplicate with the dispute that already exists, as it stands now."""
+    return JSONResponse(
+        record.view().model_dump(mode="json"),
+        headers={"Idempotent-Replay": "true", "Location": f"/v1/disputes/{record.dispute_id}"},
     )
+
+
+def build_queue() -> DisputeQueue:
+    """Choose the queue from QUEUE_BACKEND: `memory` (default; the worker runs in this process)
+    or `servicebus` (the worker is a separate deployment)."""
+    backend = os.environ.get("QUEUE_BACKEND", "memory").strip()
+    if backend == "memory":
+        return InMemoryQueue()
+    if backend == "servicebus":
+        return ServiceBusQueue(os.environ["SERVICEBUS_NAMESPACE"], os.environ["SERVICEBUS_QUEUE"])
+    raise ValueError(f"unknown QUEUE_BACKEND={backend!r} (supported: memory, servicebus)")
 
 
 def create_app(
@@ -71,7 +86,14 @@ def create_app(
     specialists: Specialists | None = None,
     tracing: Tracing | None = None,
     policy: RefundPolicyConfig | None = None,
+    gate: DisputeGate | None = None,
+    store: DisputeStore | None = None,
+    queue: DisputeQueue | None = None,
+    signer: TokenSigner | None = None,
+    delegation: DelegationSettings | None = None,
     recursion_limit: int = RECURSION_LIMIT,
+    retry_delay_seconds: float = RETRY_DELAY_SECONDS,
+    shutdown_grace_seconds: float = 30.0,
 ) -> FastAPI:
     """Build the app. Arguments default to real, env-configured dependencies; tests pass fakes."""
 
@@ -83,73 +105,137 @@ def create_app(
         http = None
         if specialists is None:
             http = httpx.AsyncClient(timeout=60)  # an agent run takes several seconds
-        app.state.auth = auth or AuthSettings.from_env()
-        app.state.specialists = specialists or HttpSpecialists(
+        state = app.state
+        state.auth = auth or AuthSettings.from_env()
+        state.specialists = specialists or HttpSpecialists(
             http,
             fraud_url=os.environ["FRAUD_AGENT_URL"],
             ledger_url=os.environ["LEDGER_AGENT_URL"],
             core_url=os.environ["CORE_SYSTEMS_URL"],
         )
-        app.state.policy = policy or RefundPolicyConfig.from_env()
-        app.state.tracing = tracing or build_tracing()
-        app.state.graph = build_graph(model or build_chat_model())
+        state.gate = gate or build_gate()
+        state.store, pool = (store, None) if store is not None else await open_store()
+        state.queue = queue or build_queue()
+
+        background = [asyncio.create_task(_sweep(state.store))]
+        worker_tracing = None
+        if isinstance(state.queue, InMemoryQueue):
+            # No separate worker exists for an in-memory queue, so this process is the worker too.
+            signing, settings = (signer, delegation) if signer is not None else build_signer()
+            worker_tracing = tracing or build_tracing()
+            # ... and the refund payer, with its own in-memory queue and delivery limit.
+            refunds = InMemoryQueue(max_deliveries=REFUND_MAX_DELIVERIES)
+            payer = RefundPayer(store=state.store, queue=refunds, specialists=state.specialists,
+                                retry_delay_seconds=retry_delay_seconds, **RefundPayer.settings_from_env())
+            runner = TriageRunner(
+                store=state.store, queue=state.queue, refunds=refunds, graph=build_graph(model or build_chat_model()),
+                specialists=state.specialists, policy=policy or RefundPolicyConfig.from_env(),
+                tracing=worker_tracing, signer=signing, delegation=settings,
+                recursion_limit=recursion_limit, retry_delay_seconds=retry_delay_seconds,
+                shutdown_grace_seconds=shutdown_grace_seconds,
+            )
+            background.append(asyncio.create_task(runner.run_forever()))
+            background.append(asyncio.create_task(payer.run_forever()))
         yield
-        app.state.tracing.shutdown()
+        for task in background:
+            task.cancel()
+        for task in background:
+            with suppress(asyncio.CancelledError):
+                await task
+        if worker_tracing is not None:
+            worker_tracing.shutdown()
+        if isinstance(state.queue, ServiceBusQueue):
+            await state.queue.close()
+        if pool is not None:
+            await pool.close()
         if http is not None:
             await http.aclose()
 
-    app = FastAPI(title="Dispute Triage Supervisor", version="1.0.0", lifespan=lifespan)
+    app = FastAPI(title="Dispute Triage Supervisor", version="3.0.0", lifespan=lifespan)
 
-    def caller(request: Request, authorization: Annotated[str | None, Header()] = None) -> tuple[CallerIdentity, str]:
+    async def _sweep(dispute_store: DisputeStore) -> None:
+        """Fail runs that never finished, so no dispute stays 'running' forever."""
+        while True:
+            await asyncio.sleep(SWEEP_EVERY_SECONDS)
+            try:
+                failed = await dispute_store.fail_stuck(STUCK_AFTER_SECONDS, NEEDS_PERSON)
+                if failed:
+                    log.error("%d run(s) did not finish in time and were marked for a person", failed)
+            except Exception:
+                log.exception("sweep failed; will try again")
+
+    def caller(request: Request, authorization: Annotated[str | None, Header()] = None) -> CallerIdentity:
         try:
-            token = bearer_token(authorization)
-            return verify_token(token, request.app.state.auth), token
+            return verify_token(bearer_token(authorization), request.app.state.auth)
         except AuthError as exc:
             log.warning("authentication failed: %s", exc)
             raise HTTPException(401, "invalid or missing token", {"WWW-Authenticate": "Bearer"}) from exc
 
-    @app.post("/v1/disputes/triage", response_model=TriageResult)
-    async def triage(
-        dispute: DisputeRequest, request: Request, auth_: Annotated[tuple[CallerIdentity, str], Depends(caller)]
-    ) -> TriageResult:
-        identity, token = auth_
+    Caller = Annotated[CallerIdentity, Depends(caller)]
+
+    @app.post("/v1/disputes", status_code=202, response_model=DisputeView)
+    async def submit_dispute(dispute: DisputeRequest, request: Request, response: Response, identity: Caller):
         state = request.app.state
 
-        # Authorization in code, before any model call.
+        # The gate: one dispute per customer and transaction. If its store is down we fail closed.
+        key = dispute_key(identity.user_id, dispute.transaction_id)
         try:
+            claim = await state.gate.claim(key)
+        except GateUnavailable as exc:
+            log.error("dispute gate unavailable: %s", exc)
+            raise HTTPException(503, "dispute intake is temporarily unavailable", {"Retry-After": "10"}) from exc
+        if claim.dispute_id is not None:
+            existing = await state.store.get(UUID(claim.dispute_id), identity.user_id)
+            if existing is not None:
+                return _replay(existing)
+        elif claim.in_progress:
+            raise HTTPException(409, "this dispute is already being processed", {"Retry-After": "5"})
+
+        # This request holds the key. It must end by creating the dispute or by giving the key back.
+        try:
+            # Authorization in code, before anything is stored and before any model call.
             if not await state.specialists.owns_transaction(identity, dispute.transaction_id):
                 raise HTTPException(404, "transaction not found")
+            record, created = await state.store.create(
+                dispute_id=uuid4(), dispute_key=key, user_id=identity.user_id, request=dispute,
+                customer_message=RECEIVED,
+            )
+        except HTTPException:
+            await _give_back(state.gate, key)
+            raise
         except SpecialistUnavailable as exc:
+            await _give_back(state.gate, key)
             raise HTTPException(503, "core systems unavailable") from exc
+        except Exception as exc:
+            log.exception("could not store dispute for %s", dispute.transaction_id)
+            await _give_back(state.gate, key)
+            raise HTTPException(503, "dispute intake is temporarily unavailable", {"Retry-After": "10"}) from exc
 
-        callbacks, trace_id = state.tracing.start()
-        config = {
-            "recursion_limit": recursion_limit,  # hard stop, whatever the graph and the model do
-            "callbacks": callbacks,
-            "run_name": "dispute-triage",
-            "metadata": {
-                "langfuse_user_id": identity.user_id,
-                "langfuse_session_id": identity.token_id,
-                "langfuse_tags": ["dispute-triage", dispute.reason.value],
-                "transaction_id": dispute.transaction_id,
-            },
-        }
-        context = TriageContext(
-            caller=identity, token=token, specialists=state.specialists, policy=state.policy, trace_id=trace_id
-        )
         try:
-            final = await state.graph.ainvoke({"dispute": dispute}, config=config, context=context)
-        except GraphRecursionError:
-            reason = f"the graph exceeded its hard limit of {recursion_limit} steps"
-            log.error("triage of %s stopped: %s", dispute.transaction_id, reason)
-            final = {"escalation_reason": reason, "steps": [f"escalate: {reason}"]}
-        except Exception:
-            # Anything unforeseen ends in human review, never in a crash or a silent drop.
-            log.exception("triage of %s failed unexpectedly", dispute.transaction_id)
-            reason = "an unexpected error stopped the triage"
-            final = {"escalation_reason": reason, "steps": [f"escalate: {reason}"]}
+            await state.gate.complete(key, str(record.dispute_id))
+        except GateUnavailable as exc:
+            log.error("could not point the key at dispute %s (the database still guards it): %s", record.dispute_id, exc)
+        if not created:
+            return _replay(record)  # Redis had forgotten this key; the database had not
 
-        return _result(dispute, final, state.tracing.url(trace_id))
+        # Hand the work to the queue. The message is only the ID: no customer data, no token.
+        try:
+            await state.queue.send(record.dispute_id)
+        except Exception:
+            # The dispute exists and must not be lost or left waiting: it goes to a person.
+            log.exception("could not queue dispute %s", record.dispute_id)
+            await state.store.fail(record.dispute_id, NEEDS_PERSON, "the dispute could not be queued")
+            record = await state.store.get(record.dispute_id, identity.user_id) or record
+        response.headers["Location"] = f"/v1/disputes/{record.dispute_id}"
+        return record.view()
+
+    @app.get("/v1/disputes/{dispute_id}", response_model=DisputeView)
+    async def get_dispute(dispute_id: UUID, request: Request, identity: Caller):
+        # Scoped to the caller in the query itself: someone else's dispute is "not found".
+        record = await request.app.state.store.get(dispute_id, identity.user_id)
+        if record is None:
+            raise HTTPException(404, "dispute not found")
+        return record.view()
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict:
@@ -157,7 +243,11 @@ def create_app(
 
     @app.get("/readyz", include_in_schema=False)
     async def readyz(request: Request) -> JSONResponse:
-        ready = await request.app.state.specialists.ready()
+        # Not ready without the gate, the dispute store, and the queue: such a replica takes no
+        # traffic. The agents are NOT checked: if they are down, disputes are still accepted and
+        # wait in the queue, which is the point of having one.
+        state = request.app.state
+        ready = await state.gate.ping() and await state.store.ping() and await state.queue.ping()
         return JSONResponse({"status": "ready" if ready else "not ready"}, status_code=200 if ready else 503)
 
     return app

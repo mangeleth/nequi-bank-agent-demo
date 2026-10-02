@@ -1,0 +1,25 @@
+---
+# Settings for the refund payer (ADR-0021). ${...} values are filled from .env by `make deploy`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: refund-payer
+  namespace: disputes
+  labels:
+    app.kubernetes.io/name: refund-payer
+    app.kubernetes.io/part-of: dispute-triage
+data:
+  # The queue it consumes: approved refunds, as dispute IDs
+  SERVICEBUS_NAMESPACE: ${SERVICEBUS_NAMESPACE}
+  REFUNDS_QUEUE: ${REFUNDS_QUEUE}
+  # The dispute records it updates (refund_approved -> refund_paid)
+  DISPUTE_STORE: postgres
+  PGHOST: postgres
+  PGDATABASE: disputes
+  PGUSER: disputes
+  POSTGRES_PASSWORD_FILE: /mnt/secrets/postgres-password
+  # The only service it calls: Core Banking's refund endpoint
+  CORE_SYSTEMS_URL: http://core-systems
+  # Operations. Changing these is an operational change, applied with a rollout.
+  REFUND_PAYMENTS_PER_SECOND: "2" # how many payments may START per second
+  REFUND_PAYMENTS_PAUSED: "false" # "true" stops paying; approved refunds wait in the queue

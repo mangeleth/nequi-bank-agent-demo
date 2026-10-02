@@ -1,0 +1,110 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: postgres
+  namespace: disputes
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: dispute-triage
+  annotations:
+    # Workload Identity: federated to the managed identity id-postgres, which may read only the
+    # postgres-password secret in Key Vault. It has no Azure OpenAI access.
+    azure.workload.identity/client-id: ${WI_CLIENT_ID}
+automountServiceAccountToken: false
+---
+# PostgreSQL: the durable record of every dispute (ADR-0016).
+# A StatefulSet, not a Deployment: the pod keeps the same name and the same disk across restarts.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: disputes
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: dispute-triage
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/part-of: dispute-triage
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: postgres
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70 # the image's postgres user
+        runAsGroup: 70
+        fsGroup: 70 # makes the disk writable by that user
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: ${ACR_NAME}.azurecr.io/postgres:17-alpine # imported into our registry: `make postgres-image`
+          env:
+            - name: POSTGRES_DB
+              value: disputes
+            - name: POSTGRES_USER
+              value: disputes
+            - name: POSTGRES_PASSWORD_FILE # read once, when the database is first created
+              value: /mnt/secrets/postgres-password
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 384Mi
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "disputes", "-d", "disputes"] }
+            periodSeconds: 5
+          livenessProbe:
+            exec: { command: ["pg_isready", "-U", "disputes", "-d", "disputes"] }
+            periodSeconds: 15
+            failureThreshold: 4
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+            - name: password
+              mountPath: /mnt/secrets
+              readOnly: true
+      volumes:
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: password
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: postgres-password
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: managed-csi # an Azure managed disk that outlives the pod
+        resources:
+          requests:
+            storage: 1Gi

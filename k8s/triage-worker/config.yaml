@@ -1,0 +1,43 @@
+---
+# Settings for the triage worker (ADR-0018). ${...} values are filled from .env by `make deploy`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: triage-worker
+  namespace: disputes
+  labels:
+    app.kubernetes.io/name: triage-worker
+    app.kubernetes.io/part-of: dispute-triage
+data:
+  # The queue it consumes, and the dispute records it updates
+  QUEUE_BACKEND: servicebus
+  SERVICEBUS_NAMESPACE: ${SERVICEBUS_NAMESPACE}
+  SERVICEBUS_QUEUE: ${SERVICEBUS_QUEUE}
+  # Approved refunds go here, for the refund payer (ADR-0021). This worker may only send to it.
+  REFUNDS_QUEUE: ${REFUNDS_QUEUE}
+  DISPUTE_STORE: postgres
+  PGHOST: postgres
+  PGDATABASE: disputes
+  PGUSER: disputes
+  POSTGRES_PASSWORD_FILE: /mnt/secrets/postgres-password
+  # The services it calls
+  CORE_SYSTEMS_URL: http://core-systems
+  FRAUD_AGENT_URL: http://fraud-agent
+  LEDGER_AGENT_URL: http://ledger-agent
+  AOAI_NAME: ${AOAI_NAME}
+  AOAI_DEPLOYMENT: ${AOAI_DEPLOYMENT}
+  AOAI_API_VERSION: ${AOAI_API_VERSION}
+  # Tokens it issues to act for a customer (ADR-0017): signed by a key that stays in Key Vault
+  INTERNAL_JWT_ISSUER: https://supervisor.disputes.internal
+  INTERNAL_JWT_AUDIENCE: dispute-agents
+  INTERNAL_JWT_KEY_ID: https://${KEYVAULT_NAME}.vault.azure.net/keys/supervisor-signing-key
+  # Langfuse: the keys are files mounted from Key Vault (see secrets.yaml), never env values
+  LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL}
+  LANGFUSE_PUBLIC_KEY_FILE: /mnt/secrets/langfuse-public-key
+  LANGFUSE_SECRET_KEY_FILE: /mnt/secrets/langfuse-secret-key
+  # Refund policy limits (ADR-0007). Changing these is an operational change, not a code change.
+  AUTO_REFUND_ENABLED: "true" # kill switch: "false" sends every refund to a human
+  AUTO_REFUND_MAX_AMOUNT: "100000.00"
+  AUTO_REFUND_MAX_COUNT: "3"
+  AUTO_REFUND_MAX_TOTAL: "200000.00"
+  AUTO_REFUND_WINDOW_DAYS: "30"

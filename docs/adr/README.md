@@ -19,6 +19,14 @@ To change a decision, add a new ADR that supersedes the old one, and mark the ol
 | [0012](0012-ledger-agent-over-mcp.md) | Ledger Agent reaches Core Banking through MCP, and its figures are verified in code | Accepted | M4 |
 | [0013](0013-supervisor-graph-circuit-breakers-tracing.md) | Supervisor as a cyclic LangGraph with code-enforced circuit breakers, traced to Langfuse | Accepted | M5 |
 | [0014](0014-evaluation-against-the-real-model.md) | Evaluate the deployed system against the real model, scored from its traces | Accepted | M8 |
+| [0015](0015-deduplication-gate.md) | Deduplication gate: one dispute per customer and transaction | Accepted | M6 |
+| [0016](0016-dispute-store-and-two-statuses.md) | Disputes are stored records in PostgreSQL, with separate execution and business statuses | Accepted | M6 |
+| [0017](0017-token-exchange-for-delegated-work.md) | The supervisor issues its own short-lived token to act for a customer | Accepted | M6 |
+| [0018](0018-dispute-queue-and-worker.md) | Disputes wait in a queue; a separate worker runs them, with at most two deliveries | Accepted | M6 |
+| [0019](0019-shared-ledger-in-postgresql.md) | The ledger is one shared PostgreSQL store, and the database enforces "pay once" | Accepted | M6 |
+| [0020](0020-paying-approved-refunds.md) | The worker pays approved refunds from the saved decision; definite refusals go to a person | Accepted | M6 |
+| [0021](0021-refund-payer-and-refunds-queue.md) | Approved refunds go through their own queue, paid by a separate payer at a fixed pace | Accepted | M6 |
+| [0022](0022-known-incident-fast-path.md) | Disputes covered by a confirmed incident are decided by code, without a model | Accepted | M6 |
 
 ## Template
 
