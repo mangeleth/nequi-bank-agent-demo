@@ -56,8 +56,17 @@ After ADR-0020 the triage worker paid a refund right after deciding it. That had
   not minutes of backoff.
 
 ## Production delta
-A rate limit shared by several payer replicas (a token bucket in Redis, or the core banking
-system's own admission control); Standard tier with scheduled redelivery and exponential backoff,
+**A shared limit for several payers.** With one replica the per-process pace is the ledger's rate.
+With several, each counting on its own, the total multiplies (3 payers x 2 per second = 6). So
+every payer asks one shared counter before each payment: a token bucket in Redis, or the core
+banking system's own admission control.
+
+If the shared counter is down, payers **wait (fail closed)**: a refund can wait safely in the
+queue, but an overloaded core banking system affects every customer. For long outages, a
+conservative fallback: each payer pays at a fixed low share of the limit, counted locally (below
+limit / payers, since the number of payers can change).
+
+Also: Standard tier with scheduled redelivery and exponential backoff,
 so a ledger outage of minutes is waited out; an alert on queue depth and on the dead-letter queue;
 the pause switch as an audited operations action rather than a config rollout; a network policy
 so only the payer can reach the refund endpoint.
