@@ -198,3 +198,21 @@ def test_a_refund_paid_after_the_explanation_is_taken_out_of_the_evidence():
 def test_otherwise_the_current_records_are_the_evidence(paid, written):
     current, _ = as_of(NOW_REVERSED, refund(paid) if paid else None, written)
     assert current == NOW_REVERSED
+
+
+async def test_the_consumer_survives_redis_being_flushed():
+    """`make demo-reset` flushes Redis, deleting the stream and its group. Seen on the cluster:
+    the judge's consumer stopped. It must recreate the group and keep consuming."""
+    client = fakeredis.FakeAsyncRedis(decode_responses=True)
+    jobs = RedisJudgeJobs(client, consumer="a", block_ms=50)
+    deliveries = jobs.receive().__aiter__()
+    first_id = uuid4()
+    await jobs.enqueue(first_id)
+    assert (await asyncio.wait_for(anext(deliveries), 5)).dispute_id == first_id
+
+    await client.flushdb()  # the reset
+    after = uuid4()
+    task = asyncio.ensure_future(anext(deliveries))
+    await asyncio.sleep(0.2)  # the consumer hits NOGROUP and recreates the group
+    await jobs.enqueue(after)
+    assert (await asyncio.wait_for(task, 5)).dispute_id == after

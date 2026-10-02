@@ -113,17 +113,27 @@ class RedisJudgeJobs:
         return JudgeJob(dispute_id=dispute_id, job_id=entry_id, attempt=await self._attempt(entry_id))
 
     async def receive(self) -> AsyncIterator[JudgeJob]:
+        from redis.exceptions import ResponseError
+
         await self._ensure_group()
         while True:
             await asyncio.sleep(0)  # let other tasks run between reads, whatever the client does
-            # First, jobs another worker received and never acknowledged (it died, or failed).
-            _, claimed, _ = await self._redis.xautoclaim(STREAM, GROUP, self._consumer,
-                                                         min_idle_time=RECLAIM_IDLE_MS, count=1)
-            entries = claimed
-            if not entries:
-                read = await self._redis.xreadgroup(GROUP, self._consumer, {STREAM: ">"}, count=1,
-                                                    block=self._block_ms)
-                entries = read[0][1] if read else []
+            try:
+                # First, jobs another worker received and never acknowledged (it died, or failed).
+                _, claimed, _ = await self._redis.xautoclaim(STREAM, GROUP, self._consumer,
+                                                             min_idle_time=RECLAIM_IDLE_MS, count=1)
+                entries = claimed
+                if not entries:
+                    read = await self._redis.xreadgroup(GROUP, self._consumer, {STREAM: ">"}, count=1,
+                                                        block=self._block_ms)
+                    entries = read[0][1] if read else []
+            except ResponseError as exc:
+                if "NOGROUP" not in str(exc):
+                    raise
+                # The stream or the group was deleted (for example `make demo-reset` flushes Redis):
+                # create it again and keep consuming, instead of stopping the worker.
+                await self._ensure_group()
+                continue
             for entry_id, fields in entries:
                 if fields and (job := await self._job(entry_id, fields)) is not None:
                     yield job
