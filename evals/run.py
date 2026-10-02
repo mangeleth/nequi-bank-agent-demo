@@ -82,7 +82,10 @@ def run_scenario(supervisor: httpx.Client, langfuse: httpx.Client, scenario: dic
 
     observations, complete = [], True
     trace_url = body.get("trace_url") if isinstance(body, dict) else None
-    if trace_url:
+    # A replay is answered by the gate from its store: no model ran, and the trace it links to
+    # belongs to the original request, so it must not be counted again.
+    replayed = response.headers.get("idempotent-replay") == "true"
+    if trace_url and not replayed:
         observations, complete = fetch_trace(langfuse, trace_url.rsplit("/", 1)[1], expected_runs(body))
     generations = [o for o in observations if o.get("type") == "GENERATION"]
     return {
@@ -95,6 +98,7 @@ def run_scenario(supervisor: httpx.Client, langfuse: httpx.Client, scenario: dic
         "total_tokens": sum((g.get("usageDetails") or {}).get("total", 0) or 0 for g in generations),
         "trace_url": trace_url,
         "trace_complete": complete,
+        "replayed": replayed,
     }
 
 

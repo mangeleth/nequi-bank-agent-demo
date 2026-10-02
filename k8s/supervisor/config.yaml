@@ -23,6 +23,11 @@ data:
   LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL}
   LANGFUSE_PUBLIC_KEY_FILE: /mnt/secrets/langfuse-public-key
   LANGFUSE_SECRET_KEY_FILE: /mnt/secrets/langfuse-secret-key
+  # Deduplication gate (ADR-0015): one dispute per customer and transaction
+  DEDUP_BACKEND: redis
+  REDIS_URL: redis://redis:6379/0
+  DEDUP_LOCK_SECONDS: "120" # a running triage holds its key this long at most
+  DEDUP_RESULT_SECONDS: "86400" # a finished result answers duplicates for 24 hours
   # Refund policy limits (ADR-0007). Changing these is an operational change, not a code change.
   AUTO_REFUND_ENABLED: "true" # kill switch: "false" sends every refund to a human
   AUTO_REFUND_MAX_AMOUNT: "100000.00"

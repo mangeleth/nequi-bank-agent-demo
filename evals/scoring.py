@@ -82,7 +82,11 @@ def evaluate(run: dict, scenario: dict) -> dict:
     expected, request = scenario["expected"], scenario["request"]
     body = run.get("body") or {}
 
-    task_success = run["http_status"] == expected["http_status"]
+    # A duplicate must be answered from the gate, and a first submission must not be.
+    task_success = (
+        run["http_status"] == expected["http_status"]
+        and run.get("replayed", False) == expected.get("replay", False)
+    )
     if task_success and expected["http_status"] == 200:
         task_success = (
             body.get("status") == expected["status"]
@@ -102,7 +106,11 @@ def evaluate(run: dict, scenario: dict) -> dict:
         "tokens": run["total_tokens"],
         "agent_retries": agent_retries(body),
         "trace_complete": run.get("trace_complete", True),
-        "groundedness": numeric_groundedness(_model_text(body), source_text) if expected["http_status"] == 200 else None,
+        "replayed": run.get("replayed", False),
+        "groundedness": (
+            numeric_groundedness(_model_text(body), source_text)
+            if expected["http_status"] == 200 and not run.get("replayed", False) else None
+        ),
         "actual": {
             "http_status": run["http_status"],
             "status": body.get("status"),

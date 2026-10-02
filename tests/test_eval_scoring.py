@@ -153,3 +153,13 @@ def test_retries_are_counted_from_the_reported_path():
 def test_summary_reports_spending_and_cost_per_success_together():
     summary = summarize([evaluate(run(), SCENARIO)])
     assert {"successes", "agent_retries", "total_cost_usd", "cost_per_success_usd"} <= set(summary)
+
+
+def test_a_duplicate_must_be_a_replay_and_a_first_submission_must_not():
+    duplicate = SCENARIO | {"expected": SCENARIO["expected"] | {"replay": True, "required_tool_calls": []}}
+    replayed = run(replayed=True, tool_calls=[], total_cost_usd=0, total_tokens=0)
+
+    assert evaluate(replayed, duplicate)["task_success"] is True
+    assert evaluate(run(), duplicate)["task_success"] is False  # the models ran again for a duplicate
+    assert evaluate(replayed, SCENARIO)["task_success"] is False  # a first submission answered from a stale store
+    assert evaluate(replayed, duplicate)["cost_usd"] == 0

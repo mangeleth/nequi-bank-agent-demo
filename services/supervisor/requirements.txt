@@ -4,5 +4,6 @@ langgraph>=1.0,<2
 langfuse>=3,<5
 azure-identity>=1.19
 httpx>=0.28
+redis>=5,<9
 fastapi>=0.140,<1
 uvicorn>=0.50,<1

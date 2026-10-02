@@ -1,0 +1,70 @@
+---
+# Redis: the shared store for the dispute deduplication gate (ADR-0015).
+# It holds no source of truth: only claims and finished results, all with an expiry.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: disputes
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: dispute-triage
+spec:
+  replicas: 1 # one copy of the truth about claims; see ADR-0015 for the trade-off
+  strategy:
+    type: Recreate # never two Redis pods with different contents
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/part-of: dispute-triage
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999 # the image's redis user
+        runAsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: ${ACR_NAME}.azurecr.io/redis:7.4-alpine # imported into our registry: `make redis-image`
+          args:
+            - --save
+            - "" # no snapshots: after a restart duplicates are simply judged afresh
+            - --appendonly
+            - "no"
+            - --maxmemory
+            - 64mb
+            - --maxmemory-policy
+            - noeviction # when full, refuse writes (the gate fails closed) instead of forgetting claims
+          ports:
+            - name: redis
+              containerPort: 6379
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              memory: 96Mi
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: redis }
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: 64Mi

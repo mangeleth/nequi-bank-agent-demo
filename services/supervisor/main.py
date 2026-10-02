@@ -1,10 +1,13 @@
 """Supervisor service: POST /v1/disputes/triage.
 
-Order of work for each request (ADR-0013):
+Order of work for each request (ADR-0013, ADR-0015):
   1. Authenticate: verify the JWT.
-  2. Authorize in code: the disputed transaction must belong to the caller (no model call yet).
-  3. Run the supervisor graph with a hard recursion limit, traced to Langfuse.
-  4. Return what was decided, the path taken, and a link to the trace.
+  2. Deduplicate: claim the key sha256(user_id, transaction_id). A duplicate gets the stored
+     result, or "already being processed", and goes no further.
+  3. Authorize in code: the disputed transaction must belong to the caller (no model call yet).
+  4. Run the supervisor graph with a hard recursion limit, traced to Langfuse.
+  5. Store the result under the key, and return what was decided, the path taken, and a link
+     to the trace.
 
 Run locally:  make run-supervisor
 """
@@ -18,11 +21,12 @@ from uuid import uuid4
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from langchain_core.language_models import BaseChatModel
 from langgraph.errors import GraphRecursionError
 
 from services.supervisor.clients import HttpSpecialists, Specialists, SpecialistUnavailable
+from services.supervisor.dedup import DisputeGate, GateUnavailable, build_gate, dispute_key
 from services.supervisor.graph import RECURSION_LIMIT, TriageContext, TriageState, build_graph
 from services.supervisor.messages import customer_message
 from shared.auth import AuthError, AuthSettings, CallerIdentity, bearer_token, verify_token
@@ -64,6 +68,13 @@ def _result(dispute: DisputeRequest, state: TriageState, trace_url: str | None) 
     )
 
 
+async def _give_back(gate: DisputeGate, key: str) -> None:
+    try:
+        await gate.release(key)
+    except GateUnavailable as exc:
+        log.error("could not release a dispute key (it will expire): %s", exc)
+
+
 def create_app(
     *,
     auth: AuthSettings | None = None,
@@ -71,6 +82,7 @@ def create_app(
     specialists: Specialists | None = None,
     tracing: Tracing | None = None,
     policy: RefundPolicyConfig | None = None,
+    gate: DisputeGate | None = None,
     recursion_limit: int = RECURSION_LIMIT,
 ) -> FastAPI:
     """Build the app. Arguments default to real, env-configured dependencies; tests pass fakes."""
@@ -92,6 +104,7 @@ def create_app(
         )
         app.state.policy = policy or RefundPolicyConfig.from_env()
         app.state.tracing = tracing or build_tracing()
+        app.state.gate = gate or build_gate()
         app.state.graph = build_graph(model or build_chat_model())
         yield
         app.state.tracing.shutdown()
@@ -108,20 +121,7 @@ def create_app(
             log.warning("authentication failed: %s", exc)
             raise HTTPException(401, "invalid or missing token", {"WWW-Authenticate": "Bearer"}) from exc
 
-    @app.post("/v1/disputes/triage", response_model=TriageResult)
-    async def triage(
-        dispute: DisputeRequest, request: Request, auth_: Annotated[tuple[CallerIdentity, str], Depends(caller)]
-    ) -> TriageResult:
-        identity, token = auth_
-        state = request.app.state
-
-        # Authorization in code, before any model call.
-        try:
-            if not await state.specialists.owns_transaction(identity, dispute.transaction_id):
-                raise HTTPException(404, "transaction not found")
-        except SpecialistUnavailable as exc:
-            raise HTTPException(503, "core systems unavailable") from exc
-
+    async def _run_triage(dispute: DisputeRequest, identity: CallerIdentity, token: str, state) -> TriageResult:
         callbacks, trace_id = state.tracing.start()
         config = {
             "recursion_limit": recursion_limit,  # hard stop, whatever the graph and the model do
@@ -148,8 +148,47 @@ def create_app(
             log.exception("triage of %s failed unexpectedly", dispute.transaction_id)
             reason = "an unexpected error stopped the triage"
             final = {"escalation_reason": reason, "steps": [f"escalate: {reason}"]}
-
         return _result(dispute, final, state.tracing.url(trace_id))
+
+    @app.post("/v1/disputes/triage", response_model=TriageResult)
+    async def triage(
+        dispute: DisputeRequest, request: Request, auth_: Annotated[tuple[CallerIdentity, str], Depends(caller)]
+    ):
+        identity, token = auth_
+        state = request.app.state
+
+        # The gate: one dispute per customer and transaction. A duplicate stops here, before the
+        # ownership lookup and before any model call. If the store is down we fail closed.
+        key = dispute_key(identity.user_id, dispute.transaction_id)
+        try:
+            claim = await state.gate.claim(key)
+        except GateUnavailable as exc:
+            log.error("dispute gate unavailable: %s", exc)
+            raise HTTPException(503, "dispute intake is temporarily unavailable", {"Retry-After": "10"}) from exc
+        if claim.result is not None:
+            return Response(claim.result, media_type="application/json", headers={"Idempotent-Replay": "true"})
+        if claim.in_progress:
+            raise HTTPException(409, "this dispute is already being processed", {"Retry-After": "5"})
+
+        # This request holds the key. It must end by storing a result or by giving the key back.
+        try:
+            # Authorization in code, before any model call.
+            if not await state.specialists.owns_transaction(identity, dispute.transaction_id):
+                raise HTTPException(404, "transaction not found")
+        except SpecialistUnavailable as exc:
+            await _give_back(state.gate, key)
+            raise HTTPException(503, "core systems unavailable") from exc
+        except HTTPException:
+            await _give_back(state.gate, key)
+            raise
+
+        result = await _run_triage(dispute, identity, token, state)
+        try:
+            await state.gate.complete(key, result.model_dump_json())
+        except GateUnavailable as exc:
+            # The triage is done; the claim expires on its own. Duplicates may run again after that.
+            log.error("could not store the result of %s: %s", dispute.transaction_id, exc)
+        return result
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict:
@@ -157,7 +196,8 @@ def create_app(
 
     @app.get("/readyz", include_in_schema=False)
     async def readyz(request: Request) -> JSONResponse:
-        ready = await request.app.state.specialists.ready()
+        # Not ready without the gate's store: a replica that cannot deduplicate takes no traffic.
+        ready = await request.app.state.gate.ping() and await request.app.state.specialists.ready()
         return JSONResponse({"status": "ready" if ready else "not ready"}, status_code=200 if ready else 503)
 
     return app

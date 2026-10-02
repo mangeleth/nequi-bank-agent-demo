@@ -10,7 +10,7 @@ Kubernetes manifests and tests are written alongside each service, not at the en
 | **M3** Security boundary + Fraud Agent | `shared/auth.py`, `services/fraud_agent/`, Azure OpenAI + Workload Identity federation | Fraud Agent calling Core Systems and Azure OpenAI with no stored keys | Done |
 | **M4** Ledger Agent | MCP server in Core Systems, `services/ledger_agent/` (MCP client) | Ledger Agent querying settlement state over MCP | Done |
 | **M5** LangGraph supervisor, circuit breakers & tracing | `services/supervisor/` (LangGraph + Langfuse Cloud, keys from Key Vault); steps below | Done |
-| **M6** Safety gate: idempotency, a buffer for Core Banking, and a known-incident fast path | Deduplication key at the gate, a message queue for intake, a rate-limited approval drain, refund execution in Core Systems, an incident registry; steps below | Disputes accepted asynchronously; duplicates and known incidents never reach a model; the ledger is written at a controlled rate | Next |
+| **M6** Safety gate: idempotency, a buffer for Core Banking, and a known-incident fast path | Deduplication key at the gate, a message queue for intake, a rate-limited approval drain, refund execution in Core Systems, an incident registry; steps below | Disputes accepted asynchronously; duplicates and known incidents never reach a model; the ledger is written at a controlled rate | In progress |
 | **M7** Demo UI | `services/ui/` (Streamlit) | Nequi-style UI end to end | |
 | **M8** Automated security & failure-mode tests, CI/CD | GitHub Actions (OIDC); the test suite as a merge and deploy gate; see below | Pushing to `main` builds, tests, and deploys automatically | |
 
@@ -66,8 +66,8 @@ transactions failed, an agent has nothing to investigate (`docs/LEARNINGS.md`, P
   those of customers who never filed a dispute.
 
 Planned steps:
-- **Step 9:** dispute store and deduplication key in the supervisor (`claim`, `complete`,
-  `release`), with tests for 10 simultaneous identical requests.
+- **Step 9 (done):** dispute store and deduplication key in the supervisor (`claim`,
+  `complete`, `release`) on Redis, with tests for 10 simultaneous identical requests (ADR-0015).
 - **Step 10:** asynchronous intake: queue, worker, `202 Accepted`, and status endpoint.
 - **Step 11:** refund execution in Core Systems (the first ledger write) with an idempotency
   key, and the rate-limited approval drain with a dead-letter queue.

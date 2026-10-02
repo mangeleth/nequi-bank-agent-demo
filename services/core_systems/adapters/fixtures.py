@@ -9,6 +9,7 @@
 | TX-20261001000005  | user-1002 | 20.000 still in flight                 | no action (wait)           |
 | TX-20261001000006  | user-1003 | 40.000 failed, already reversed        | no action (already refunded) |
 | TX-20261001000007  | user-1003 | 25.000 failed, 3 auto-refunds already  | human (count limit)        |
+| TX-20261001000008  | user-1001 | 50.000 debited, never credited         | auto-approved refund       |
 """
 
 from datetime import UTC, datetime, timedelta
@@ -43,6 +44,7 @@ TRANSACTIONS = {
         _tx("TX-20261001000005", "user-1002", "****5512", "20000.00", SettlementStatus.PENDING, "0.00", 0),
         _tx("TX-20261001000006", "user-1003", "****3307", "40000.00", SettlementStatus.REVERSED, "40000.00", 48),
         _tx("TX-20261001000007", "user-1003", "****3307", "25000.00", SettlementStatus.FAILED, "0.00", 2),
+        _tx("TX-20261001000008", "user-1001", "****4821", "50000.00", SettlementStatus.FAILED, "0.00", 4),
     ]
 }
 
@@ -62,6 +64,8 @@ RISK_SIGNALS = {
                               amount_vs_customer_avg=1.1, new_device_last_24h=False, transfers_last_24h=1),
     "TX-20261001000007": dict(engine_score=0.11, recipient_known=True, recipient_account_age_days=700,
                               amount_vs_customer_avg=0.7, new_device_last_24h=False, transfers_last_24h=1),
+    "TX-20261001000008": dict(engine_score=0.07, recipient_known=True, recipient_account_age_days=900,
+                              amount_vs_customer_avg=0.9, new_device_last_24h=False, transfers_last_24h=2),
 }
 
 # Past automatic refunds per customer: (days_ago, amount).

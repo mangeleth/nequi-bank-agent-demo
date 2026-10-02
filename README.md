@@ -6,6 +6,59 @@ Proof-of-concept Dispute Triage & Resolution multi-agent system on AKS.
 - Architecture decisions: [docs/adr](docs/adr/README.md)
 - Learnings (what went wrong and what changed): [docs/LEARNINGS.md](docs/LEARNINGS.md)
 
+## Architecture
+
+```mermaid
+flowchart LR
+    app["📱 Customer app<br/>JWT login"]
+
+    subgraph aks["AKS cluster · namespace disputes"]
+        direction LR
+        sup["<b>supervisor</b><br/>safety gate + LangGraph<br/>refund policy"]
+        redis[("<b>redis</b><br/>dispute keys<br/>and results")]
+        fraud["<b>fraud-agent</b><br/>LangChain agent"]
+        ledger["<b>ledger-agent</b><br/>LangChain agent<br/>MCP client"]
+        core["<b>core-systems</b><br/>Core Banking + Risk Engine<br/>REST and MCP"]
+    end
+
+    aoai["Azure OpenAI<br/>gpt-4o"]
+    kv["Key Vault<br/>Langfuse keys"]
+    lf["Langfuse Cloud<br/>traces, tokens, cost"]
+    acr["Container Registry<br/>images by git SHA"]
+    planned["Planned in M6<br/>dispute queue · refund execution<br/>known-incident registry"]
+
+    app -- "POST /v1/disputes/triage" --> sup
+    sup <-- "claim key<br/>sha256(user, transaction)" --> redis
+    sup -- "JWT + traceparent" --> fraud
+    sup -- "JWT + traceparent" --> ledger
+    fraud -- "REST" --> core
+    ledger -- "MCP" --> core
+    sup -- "ownership, refund history" --> core
+
+    sup & fraud & ledger -. "Workload Identity" .-> aoai
+    sup & fraud & ledger -. "traces" .-> lf
+    kv -. "mounted as files (CSI)" .-> sup & fraud & ledger
+    acr -. "image pull" .-> aks
+    sup -.- planned
+
+    classDef llm fill:#fff4e5,stroke:#e69500,color:#222
+    classDef det fill:#e8f4ff,stroke:#2b7bd6,color:#222
+    classDef ext fill:#f4f4f4,stroke:#888,color:#222
+    classDef plan fill:#ffffff,stroke:#aaa,stroke-dasharray: 5 5,color:#666
+    class sup,fraud,ledger llm
+    class core,redis det
+    class app,aoai,kv,lf,acr ext
+    class planned plan
+```
+
+🟧 Orange = services that call a model · 🟦 Blue = deterministic services · dashed = planned.
+Every service runs as two pods on separate nodes (Redis as one), non-root, with a read-only
+filesystem. Services log in to Azure with Workload Identity; there are no stored Azure keys.
+
+A dispute passes the **safety gate** first: one key per customer and transaction, so ten taps on
+"Dispute" run one triage and nine are answered from the gate without calling a model
+([ADR-0015](docs/adr/0015-deduplication-gate.md)).
+
 ## The supervisor graph
 
 The supervisor is a cycle: each agent reports back and the supervisor decides again. The model
@@ -14,7 +67,7 @@ chooses the route; plain code bounds the loop and enforces which evidence is req
 
 ```mermaid
 flowchart TD
-    start(["POST /v1/disputes/triage<br/>JWT verified, ownership checked in code"])
+    start(["POST /v1/disputes/triage<br/>JWT verified, duplicate check at the gate,<br/>ownership checked in code"])
     supervisor["🤖 supervisor<br/>structured output: Route<br/>turns += 1"]
     edge{"⚙️ conditional edge (code)<br/>breaker tripped?<br/>fraud assessment required?"}
     ledger["ledger_agent<br/>ledger_calls += 1"]

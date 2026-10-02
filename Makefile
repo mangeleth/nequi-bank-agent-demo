@@ -2,7 +2,7 @@
 include .env
 export
 
-.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster test guard-clean build push deploy smoke release
+.PHONY: venv az-check providers rg-create aks-create aks-rbac aks-creds aks-verify aks-stop aks-start acr-create acr-attach acr-login kv-create kv-addon aoai-create aoai-check demo-token run-core run-fraud run-ledger run-supervisor wi-create kv-grant jwt-publish smoke-fraud smoke-ledger smoke-triage eval eval-cluster redis-image dedup-reset test guard-clean build push deploy smoke release
 
 ## Create a local virtualenv with the script dependencies (uv: no system python3-venv needed)
 venv:
@@ -174,6 +174,14 @@ kv-grant:
 			--scope $$(az keyvault show -n $(KEYVAULT_NAME) --query id -o tsv)/secrets/$$secret; \
 	done
 
+## Copy the Redis image into our registry, so the cluster pulls only from ACR. Safe to run twice.
+redis-image:
+	az acr import --name $(ACR_NAME) --source docker.io/library/redis:7.4-alpine --image redis:7.4-alpine --force -o none
+
+## Forget every dispute claim and stored result (demo and evaluation only)
+dedup-reset:
+	kubectl exec -n $(K8S_NAMESPACE) deploy/redis -- redis-cli FLUSHDB
+
 ## Publish the demo identity provider's PUBLIC key to the cluster (it verifies tokens; not a secret)
 jwt-publish:
 	@test -f .local/jwt-public.pem || .venv/bin/python scripts/demo_token.py user-1001 >/dev/null
@@ -221,6 +229,7 @@ eval:
 ## Evaluate the system deployed on AKS, through a temporary port-forward to the supervisor
 eval-cluster:
 	@mkdir -p .local
+	@$(MAKE) --no-print-directory dedup-reset
 	@kubectl port-forward -n $(K8S_NAMESPACE) svc/supervisor 18004:80 >/dev/null 2>&1 & echo $$! > .local/port-forward.pid
 	@sleep 4
 	@$(MAKE) --no-print-directory eval SUPERVISOR_URL=http://127.0.0.1:18004 EVAL_LABEL=aks; status=$$?; \
@@ -253,7 +262,7 @@ deploy:
 	cat k8s/$(SERVICE)/*.yaml \
 		| IMAGE=$(IMAGE) WI_CLIENT_ID=$$(az identity show -g $(AKS_RESOURCE_GROUP) -n id-$(SERVICE) --query clientId -o tsv 2>/dev/null) \
 		  AZURE_TENANT_ID=$$(az account show --query tenantId -o tsv) \
-		  envsubst '$$IMAGE $$WI_CLIENT_ID $$AZURE_TENANT_ID $$KEYVAULT_NAME $$AOAI_NAME $$AOAI_DEPLOYMENT $$AOAI_API_VERSION $$JWT_ISSUER $$JWT_AUDIENCE $$LANGFUSE_BASE_URL' \
+		  envsubst '$$IMAGE $$ACR_NAME $$WI_CLIENT_ID $$AZURE_TENANT_ID $$KEYVAULT_NAME $$AOAI_NAME $$AOAI_DEPLOYMENT $$AOAI_API_VERSION $$JWT_ISSUER $$JWT_AUDIENCE $$LANGFUSE_BASE_URL' \
 		| kubectl apply -f -
 	kubectl rollout status deployment/$(SERVICE) -n $(K8S_NAMESPACE) --timeout=180s
 
