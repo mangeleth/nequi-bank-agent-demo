@@ -56,6 +56,36 @@ flowchart TD
 
 Limits are configuration (`AUTO_REFUND_*` env vars), with a kill switch `AUTO_REFUND_ENABLED=false`.
 
+## Paying a refund exactly once
+
+Core Systems has one endpoint that moves money, `POST /v1/core-banking/refunds`. It requires an
+`Idempotency-Key` header, and it is not offered to the agents as a tool: no model can call it.
+
+Two protections, for two different problems:
+
+| Protection | Stops | Test |
+|---|---|---|
+| **The idempotency key** | The same request arriving twice (a retry) | Ten simultaneous requests with one key: one payment, nine replays |
+| **The ledger's state** | A different request for money already refunded | A second refund with a new key on the same transaction: refused, "already_refunded" |
+
+A key alone is not enough, because a bug could send a new key for a refund already paid. The
+ledger's own state covers that case.
+
+The ledger also applies its own rules whatever the caller decided: the transaction must belong to
+the customer, must have failed, and the amount must equal exactly what was debited and never
+credited. If every check above it were wrong, the ledger would still refuse to pay more than it owes.
+
+| Request | Response |
+|---|---|
+| First time with this key | `201 Created`; the money moves |
+| The same key and the same request again | `200` with `Idempotent-Replay: true`; the same refund, nothing moves |
+| The same key for a different transaction or amount | `409 Conflict` |
+| The ledger's rules refuse it | `422` with a reason code; the key is not used up |
+
+Status: built and tested in Core Systems (`tests/test_core_refunds.py`). The worker does not call
+it yet, so an approved refund is still reported as `refund_approved`, not paid. That is the rest
+of Milestone 6, Step 11.
+
 ## Architecture
 
 ```mermaid
