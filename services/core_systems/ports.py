@@ -3,14 +3,27 @@
 Adapters implement these protocols. Today: `adapters.in_memory` (synthetic data). Later: e.g. a
 PostgreSQL ledger or an HTTP client to the real core banking platform, with no change to the API.
 
-Every read is scoped by `customer_id` *in the query itself*, so an adapter cannot accidentally
+Every read and write is scoped by `customer_id` *in the query itself*, so an adapter cannot accidentally
 return another customer's data (defence against IDOR at the data-access layer).
 Methods are async because real adapters do network I/O.
 """
 
+from decimal import Decimal
 from typing import Protocol
 
-from services.core_systems.models import RefundHistory, RiskSignals, Transaction
+from services.core_systems.models import Refund, RefundHistory, RiskSignals, Transaction
+
+
+class RefundRejected(Exception):
+    """The ledger's own rules refuse this refund. `code` is machine-readable."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class IdempotencyConflict(Exception):
+    """The idempotency key was already used for a different refund."""
 
 
 class LedgerRepository(Protocol):
@@ -19,6 +32,18 @@ class LedgerRepository(Protocol):
 
     async def get_refund_history(self, customer_id: str, window_days: int) -> RefundHistory:
         """Automatic refunds granted to the customer within the last `window_days`."""
+
+    async def execute_refund(
+        self, customer_id: str, transaction_id: str, amount: Decimal, idempotency_key: str
+    ) -> tuple[Refund, bool]:
+        """Pay a refund, exactly once. Returns the refund and whether it was a replay.
+
+        - The same key again returns the refund already made; no money moves (replay = True).
+        - The same key with a different transaction or amount raises IdempotencyConflict.
+        - The ledger applies its own rules whatever the caller decided (RefundRejected):
+          the transaction must be the customer's, must have failed, the amount must equal what
+          was debited and never credited, and a transaction can be refunded only once.
+        """
 
     async def ping(self) -> bool:
         """True if the backing system is reachable (used by the readiness probe)."""

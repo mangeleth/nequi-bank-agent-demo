@@ -5,7 +5,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from shared.schemas import Amount, Currency, Score, SettlementStatus, TransactionId
+from shared.schemas import Amount, Currency, Money, Score, SettlementStatus, TransactionId
 
 CustomerId = Annotated[str, Field(pattern=r"^user-[0-9]{4,12}$")]
 
@@ -41,3 +41,22 @@ class RefundHistory(Resource):
     window_days: int = Field(ge=1, le=365)
     auto_refund_count: int = Field(ge=0)
     auto_refund_total: Amount
+
+
+class RefundRequest(Resource):
+    """What a caller asks the ledger to refund. The customer comes from the caller's identity."""
+
+    transaction_id: TransactionId
+    amount: Money
+
+
+class Refund(Resource):
+    """A refund the ledger has executed. Money moved exactly once per refund."""
+
+    refund_id: str
+    transaction_id: TransactionId
+    customer_id: CustomerId
+    amount: Money
+    currency: Currency
+    executed_at: datetime
+    idempotency_key: str
