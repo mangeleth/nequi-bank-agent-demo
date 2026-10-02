@@ -53,8 +53,9 @@ def as_of(transaction: dict, refund: dict | None, written_at: datetime | None) -
         "settlement_status": "failed",
         "credited_amount": str(Decimal(str(transaction["credited_amount"])) - amount),
     }
-    return before, (f"as of {written_at.isoformat()}, when the explanation was written: refund "
-                    f"{refund['refund_id']} of {amount} was paid later, at {paid_at.isoformat()}, and is not included")
+    # Say only which moment this is. Mentioning the later refund leaks the future into the evidence:
+    # the judge then reads "refund recommended" as contradicting "already paid" (seen on the cluster).
+    return before, f"the records as of {written_at.isoformat()}, when the explanation was written"
 
 
 class Evidence:

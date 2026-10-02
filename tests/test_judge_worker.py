@@ -186,7 +186,8 @@ def refund(paid_at):
 def test_a_refund_paid_after_the_explanation_is_taken_out_of_the_evidence():
     before, moment = as_of(NOW_REVERSED, refund(WRITTEN + timedelta(seconds=2)), WRITTEN)
     assert (before["settlement_status"], before["credited_amount"]) == ("failed", "0.00")
-    assert "RF-1" in moment and "not included" in moment
+    assert "when the explanation was written" in moment
+    assert "RF-1" not in moment and "refund" not in moment  # nothing about what happened later
 
 
 @pytest.mark.parametrize(("paid", "written"), [
